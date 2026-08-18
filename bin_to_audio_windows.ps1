@@ -21,12 +21,13 @@ param(
     [ValidateRange(0, 1000)]
     [int] $ReleaseIndex = 0,
 
-    [string] $MusicBrainzUserAgent = 'BinToAudioWindows/2.2 (https://github.com/Gavin-LHX/cdrom-dump-tools)'
+    [string] $MusicBrainzUserAgent = 'BinToAudioWindows/2.3 (https://github.com/Gavin-LHX/cdrom-dump-tools)'
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $workDirectory = $null
+$script:LastRequestUtcByThrottleKey = @{}
 
 function Resolve-ExistingFile {
     param(
@@ -198,6 +199,124 @@ function Get-Utf8WebResponseText {
     return [string] $content
 }
 
+function Get-WebExceptionStatusCode {
+    param([Exception] $Exception)
+
+    if ($null -eq $Exception) {
+        return $null
+    }
+
+    $response = Get-ObjectProperty -Object $Exception -Name 'Response'
+    if ($null -eq $response) {
+        return $null
+    }
+
+    $statusCode = Get-ObjectProperty -Object $response -Name 'StatusCode'
+    if ($null -eq $statusCode) {
+        return $null
+    }
+
+    try {
+        return [int] $statusCode
+    }
+    catch {
+        return $null
+    }
+}
+
+function Get-WebRetryDelaySeconds {
+    param(
+        [Exception] $Exception,
+        [Parameter(Mandatory = $true)]
+        [int] $Attempt
+    )
+
+    $delaySeconds = [Math]::Min(30, [Math]::Pow(2, $Attempt))
+    $response = Get-ObjectProperty -Object $Exception -Name 'Response'
+    if ($null -eq $response) {
+        return [int] $delaySeconds
+    }
+
+    $headers = Get-ObjectProperty -Object $response -Name 'Headers'
+    if ($null -eq $headers) {
+        return [int] $delaySeconds
+    }
+
+    $retryAfter = $null
+    $getMethod = $headers.PSObject.Methods['Get']
+    if ($null -ne $getMethod) {
+        try {
+            $retryAfter = $headers.Get('Retry-After')
+        }
+        catch {
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace([string] $retryAfter)) {
+        try {
+            $retryAfter = $headers['Retry-After']
+        }
+        catch {
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace([string] $retryAfter)) {
+        return [int] $delaySeconds
+    }
+
+    [int] $retryAfterSeconds = 0
+    if ([int]::TryParse([string] $retryAfter, [ref] $retryAfterSeconds)) {
+        return [Math]::Max(1, [Math]::Min(120, $retryAfterSeconds))
+    }
+
+    [DateTimeOffset] $retryAt = [DateTimeOffset]::MinValue
+    if ([DateTimeOffset]::TryParse([string] $retryAfter, [ref] $retryAt)) {
+        $seconds = [Math]::Ceiling(($retryAt.UtcDateTime - [DateTime]::UtcNow).TotalSeconds)
+        return [int] [Math]::Max(1, [Math]::Min(120, $seconds))
+    }
+
+    return [int] $delaySeconds
+}
+
+function Test-TransientWebFailure {
+    param([Exception] $Exception)
+
+    $statusCode = Get-WebExceptionStatusCode -Exception $Exception
+    if ($null -eq $statusCode) {
+        return $true
+    }
+
+    return $statusCode -in @(408, 425, 429, 500, 502, 503, 504)
+}
+
+function Wait-WebRequestInterval {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Uri,
+
+        [ValidateRange(0, 60000)]
+        [int] $MinimumIntervalMilliseconds = 0,
+
+        [string] $ThrottleKey
+    )
+
+    if ($MinimumIntervalMilliseconds -le 0) {
+        return
+    }
+
+    if ([string]::IsNullOrWhiteSpace($ThrottleKey)) {
+        $ThrottleKey = ([Uri] $Uri).DnsSafeHost.ToLowerInvariant()
+    }
+
+    if ($script:LastRequestUtcByThrottleKey.ContainsKey($ThrottleKey)) {
+        $elapsedMilliseconds = ([DateTime]::UtcNow - $script:LastRequestUtcByThrottleKey[$ThrottleKey]).TotalMilliseconds
+        $remainingMilliseconds = $MinimumIntervalMilliseconds - $elapsedMilliseconds
+        if ($remainingMilliseconds -gt 0) {
+            Start-Sleep -Milliseconds ([int] [Math]::Ceiling($remainingMilliseconds))
+        }
+    }
+
+    $script:LastRequestUtcByThrottleKey[$ThrottleKey] = [DateTime]::UtcNow
+}
+
 function Invoke-JsonRequestWithRetry {
     param(
         [Parameter(Mandatory = $true)]
@@ -211,7 +330,12 @@ function Invoke-JsonRequestWithRetry {
         [ValidateRange(1, 10)]
         [int] $MaximumAttempts = 5,
 
-        [string] $SourceName = 'Metadata service'
+        [string] $SourceName = 'Metadata service',
+
+        [ValidateRange(0, 60000)]
+        [int] $MinimumIntervalMilliseconds = 0,
+
+        [string] $ThrottleKey
     )
 
     if (-not [string]::IsNullOrWhiteSpace($CachePath) -and (Test-Path -LiteralPath $CachePath)) {
@@ -225,6 +349,7 @@ function Invoke-JsonRequestWithRetry {
     $lastException = $null
     for ($attempt = 1; $attempt -le $MaximumAttempts; $attempt++) {
         try {
+            Wait-WebRequestInterval -Uri $Uri -MinimumIntervalMilliseconds $MinimumIntervalMilliseconds -ThrottleKey $ThrottleKey
             $response = Invoke-WebRequest -Method Get -Uri $Uri -Headers $Headers -TimeoutSec 30 -MaximumRedirection 8 -UseBasicParsing
             $json = Get-Utf8WebResponseText -Response $response
             if ([string]::IsNullOrWhiteSpace($json)) {
@@ -243,11 +368,17 @@ function Invoke-JsonRequestWithRetry {
         }
         catch {
             $lastException = $_.Exception
-            if ($attempt -lt $MaximumAttempts) {
-                $delaySeconds = [Math]::Min(16, [Math]::Pow(2, $attempt))
-                Write-Warning "$SourceName request failed (attempt $attempt/$MaximumAttempts): $($lastException.Message)"
+            $statusCode = Get-WebExceptionStatusCode -Exception $lastException
+            $isTransient = Test-TransientWebFailure -Exception $lastException
+            if ($attempt -lt $MaximumAttempts -and $isTransient) {
+                $delaySeconds = Get-WebRetryDelaySeconds -Exception $lastException -Attempt $attempt
+                $statusText = if ($null -ne $statusCode) { "HTTP $statusCode; " } else { '' }
+                Write-Warning "$SourceName request failed (${statusText}attempt $attempt/$MaximumAttempts): $($lastException.Message)"
                 Write-Host "Retrying in $delaySeconds seconds..."
                 Start-Sleep -Seconds $delaySeconds
+            }
+            elseif (-not $isTransient) {
+                break
             }
         }
     }
@@ -272,12 +403,18 @@ function Invoke-FileDownloadWithRetry {
         [string] $Destination,
 
         [ValidateRange(1, 10)]
-        [int] $MaximumAttempts = 3
+        [int] $MaximumAttempts = 5,
+
+        [ValidateRange(0, 60000)]
+        [int] $MinimumIntervalMilliseconds = 0,
+
+        [string] $ThrottleKey
     )
 
     $lastException = $null
     for ($attempt = 1; $attempt -le $MaximumAttempts; $attempt++) {
         try {
+            Wait-WebRequestInterval -Uri $Uri -MinimumIntervalMilliseconds $MinimumIntervalMilliseconds -ThrottleKey $ThrottleKey
             Invoke-WebRequest -Method Get -Uri $Uri -Headers $Headers -TimeoutSec 30 -MaximumRedirection 8 -UseBasicParsing -OutFile $Destination
             if ((Get-Item -LiteralPath $Destination).Length -le 0) {
                 throw 'The download was empty.'
@@ -289,8 +426,17 @@ function Invoke-FileDownloadWithRetry {
             if (Test-Path -LiteralPath $Destination) {
                 Remove-Item -LiteralPath $Destination -Force
             }
-            if ($attempt -lt $MaximumAttempts) {
-                Start-Sleep -Seconds ([Math]::Min(8, [Math]::Pow(2, $attempt)))
+            $statusCode = Get-WebExceptionStatusCode -Exception $lastException
+            $isTransient = Test-TransientWebFailure -Exception $lastException
+            if ($attempt -lt $MaximumAttempts -and $isTransient) {
+                $delaySeconds = Get-WebRetryDelaySeconds -Exception $lastException -Attempt $attempt
+                $statusText = if ($null -ne $statusCode) { "HTTP $statusCode; " } else { '' }
+                Write-Warning "Image download failed (${statusText}attempt $attempt/$MaximumAttempts): $($lastException.Message)"
+                Write-Host "Retrying in $delaySeconds seconds..."
+                Start-Sleep -Seconds $delaySeconds
+            }
+            elseif (-not $isTransient) {
+                break
             }
         }
     }
@@ -331,6 +477,156 @@ function Normalize-MatchText {
     $normalized = $Text.ToLowerInvariant().Normalize([Text.NormalizationForm]::FormD)
     $normalized = [regex]::Replace($normalized, '\p{Mn}', '')
     return [regex]::Replace($normalized, '[\W_]', '')
+}
+
+function Get-AlbumMatchScore {
+    param(
+        [string] $CandidateAlbum,
+        [string] $CandidateArtist,
+        [object] $CandidateTrackCount,
+        [string] $CandidateDate,
+        [string[]] $ExpectedAlbumAliases,
+        [string] $ExpectedArtist,
+        [int] $ExpectedTrackCount,
+        [string] $ExpectedYear,
+        [int] $ResultIndex = 99
+    )
+
+    $candidateAlbumText = Normalize-MatchText $CandidateAlbum
+    $candidateArtistText = Normalize-MatchText $CandidateArtist
+    $expectedArtistText = Normalize-MatchText $ExpectedArtist
+    $aliasTexts = @($ExpectedAlbumAliases | ForEach-Object { Normalize-MatchText $_ } |
+        Where-Object { -not [string]::IsNullOrWhiteSpace([string] $_) } | Select-Object -Unique)
+
+    $score = 0
+    if ($candidateAlbumText -ne '' -and $candidateAlbumText -in $aliasTexts) {
+        $score += 60
+    }
+    elseif ($candidateAlbumText -ne '' -and @($aliasTexts | Where-Object {
+        $_.Contains($candidateAlbumText) -or $candidateAlbumText.Contains($_)
+    }).Count -gt 0) {
+        $score += 30
+    }
+
+    if ($candidateArtistText -ne '' -and $candidateArtistText -eq $expectedArtistText) {
+        $score += 30
+    }
+    elseif ($candidateArtistText -ne '' -and $expectedArtistText -ne '' -and
+        ($candidateArtistText.Contains($expectedArtistText) -or $expectedArtistText.Contains($candidateArtistText))) {
+        $score += 15
+    }
+
+    if ($null -ne $CandidateTrackCount) {
+        try {
+            if ([int] $CandidateTrackCount -eq $ExpectedTrackCount) {
+                $score += 10
+            }
+        }
+        catch {
+        }
+    }
+
+    $candidateYear = Get-YearFromDate (ConvertTo-IsoDate $CandidateDate)
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedYear) -and $candidateYear -eq $ExpectedYear) {
+        $score += 15
+    }
+
+    if ($ResultIndex -eq 0) {
+        $score += 5
+    }
+
+    return $score
+}
+
+function Get-HighResolutionAppleArtworkUri {
+    param([string] $Uri)
+
+    if ([string]::IsNullOrWhiteSpace($Uri)) {
+        return $null
+    }
+
+    return [regex]::Replace($Uri, '/\d+x\d+[^/]*\.jpg$', '/1200x1200bb.jpg', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+}
+
+function Get-CoverArtArchiveCandidate {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('release', 'release-group')]
+        [string] $EntityType,
+
+        [Parameter(Mandatory = $true)]
+        [string] $EntityId,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable] $Headers,
+
+        [Parameter(Mandatory = $true)]
+        [string] $CacheRoot
+    )
+
+    $metadataUri = "https://coverartarchive.org/$EntityType/$EntityId/"
+    $cachePath = Join-Path $CacheRoot "CoverArtArchive\$EntityType-$EntityId.json"
+    $data = Invoke-JsonRequestWithRetry -Uri $metadataUri -Headers $Headers -CachePath $cachePath -MaximumAttempts 5 -SourceName "Cover Art Archive $EntityType" -MinimumIntervalMilliseconds 250
+    $images = @(Get-ObjectProperty -Object $data -Name 'images')
+    $frontImages = @($images | Where-Object { (Get-ObjectProperty -Object $_ -Name 'front') -eq $true })
+    if ($frontImages.Count -eq 0) {
+        return $null
+    }
+
+    $approvedFronts = @($frontImages | Where-Object { (Get-ObjectProperty -Object $_ -Name 'approved') -eq $true })
+    $front = if ($approvedFronts.Count -gt 0) { $approvedFronts[0] } else { $frontImages[0] }
+    $thumbnails = Get-ObjectProperty -Object $front -Name 'thumbnails'
+    $imageUri = Get-ObjectProperty -Object $thumbnails -Name '1200'
+    if ([string]::IsNullOrWhiteSpace([string] $imageUri)) {
+        $imageUri = Get-ObjectProperty -Object $thumbnails -Name '500'
+    }
+    if ([string]::IsNullOrWhiteSpace([string] $imageUri)) {
+        $imageUri = Get-ObjectProperty -Object $front -Name 'image'
+    }
+    if ([string]::IsNullOrWhiteSpace([string] $imageUri)) {
+        return $null
+    }
+
+    $imageUri = ([string] $imageUri).Replace('http://coverartarchive.org/', 'https://coverartarchive.org/')
+    $sourceLabel = if ($EntityType -eq 'release') { 'Cover Art Archive release' } else { 'Cover Art Archive release group' }
+    return [pscustomobject]@{
+        Source     = $sourceLabel
+        Uri        = $imageUri
+        Match      = if ($EntityType -eq 'release') { 'Exact MusicBrainz release ID' } else { 'Canonical MusicBrainz release-group cover' }
+        Confidence = if ($EntityType -eq 'release') { 100 } else { 92 }
+    }
+}
+
+function Convert-CoverImageToJpeg {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $InputPath,
+
+        [Parameter(Mandatory = $true)]
+        [string] $OutputPath,
+
+        [Parameter(Mandatory = $true)]
+        [string] $FfmpegPath
+    )
+
+    if (Test-Path -LiteralPath $OutputPath) {
+        Remove-Item -LiteralPath $OutputPath -Force
+    }
+
+    & $FfmpegPath '-hide_banner' '-loglevel' 'error' '-nostdin' '-i' $InputPath '-frames:v' '1' '-q:v' '2' '-y' $OutputPath
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $OutputPath)) {
+        if (Test-Path -LiteralPath $OutputPath) {
+            Remove-Item -LiteralPath $OutputPath -Force
+        }
+        return $false
+    }
+
+    if ((Get-Item -LiteralPath $OutputPath).Length -lt 4096) {
+        Remove-Item -LiteralPath $OutputPath -Force
+        return $false
+    }
+
+    return $true
 }
 
 function Test-InstrumentalTitle {
@@ -893,6 +1189,10 @@ try {
     $releaseYear = $null
     $resolvedDate = $null
     $resolvedGenres = @()
+    $albumTitleAliases = @()
+    $bestAppleResult = $null
+    $bestAppleScore = 0
+    $wikidataCoverUri = $null
     $metadataEvidence = [System.Collections.Generic.List[object]]::new()
     $cacheRoot = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'BinToAudioWindows'
 
@@ -910,12 +1210,12 @@ try {
             $lookupUri = "https://musicbrainz.org/ws/2/discid/$($discIdentity.DiscId)?inc=recordings%2Bartist-credits%2Brelease-groups%2Bisrcs&toc=$encodedToc&cdstubs=no&fmt=json"
             $metadataCachePath = Join-Path $cacheRoot "MusicBrainz\$($discIdentity.DiscId).json"
             try {
-                $lookup = Invoke-JsonRequestWithRetry -Uri $lookupUri -Headers $headers -CachePath $metadataCachePath -MaximumAttempts 3 -SourceName 'MusicBrainz'
+                $lookup = Invoke-JsonRequestWithRetry -Uri $lookupUri -Headers $headers -CachePath $metadataCachePath -MaximumAttempts 5 -SourceName 'MusicBrainz' -MinimumIntervalMilliseconds 1100 -ThrottleKey 'musicbrainz-api'
             }
             catch {
                 Write-Warning 'Primary MusicBrainz endpoint is unavailable; trying the musicbrainz.eu mirror.'
                 $mirrorLookupUri = $lookupUri.Replace('https://musicbrainz.org/', 'https://musicbrainz.eu/')
-                $lookup = Invoke-JsonRequestWithRetry -Uri $mirrorLookupUri -Headers $headers -CachePath $metadataCachePath -MaximumAttempts 3 -SourceName 'MusicBrainz mirror'
+                $lookup = Invoke-JsonRequestWithRetry -Uri $mirrorLookupUri -Headers $headers -CachePath $metadataCachePath -MaximumAttempts 5 -SourceName 'MusicBrainz mirror' -MinimumIntervalMilliseconds 1100 -ThrottleKey 'musicbrainz-mirror'
             }
 
             $candidates = [System.Collections.Generic.List[object]]::new()
@@ -1024,19 +1324,23 @@ try {
 
                 $musicBrainzGenres = @()
                 $musicBrainzGroupDate = $null
+                $albumTitleAliases = @($albumTitle)
                 if (-not [string]::IsNullOrWhiteSpace($releaseGroupId)) {
                     try {
-                        Start-Sleep -Milliseconds 1100
-                        $releaseGroupUri = "https://musicbrainz.org/ws/2/release-group/$releaseGroupId`?inc=genres&fmt=json"
-                        $releaseGroupCachePath = Join-Path $cacheRoot "MusicBrainz\release-group-$releaseGroupId.json"
+                        $releaseGroupUri = "https://musicbrainz.org/ws/2/release-group/$releaseGroupId`?inc=aliases%2Bgenres&fmt=json"
+                        $releaseGroupCachePath = Join-Path $cacheRoot "MusicBrainz\release-group-v2-$releaseGroupId.json"
                         try {
-                            $releaseGroupData = Invoke-JsonRequestWithRetry -Uri $releaseGroupUri -Headers $headers -CachePath $releaseGroupCachePath -MaximumAttempts 3 -SourceName 'MusicBrainz genres'
+                            $releaseGroupData = Invoke-JsonRequestWithRetry -Uri $releaseGroupUri -Headers $headers -CachePath $releaseGroupCachePath -MaximumAttempts 5 -SourceName 'MusicBrainz release-group details' -MinimumIntervalMilliseconds 1100 -ThrottleKey 'musicbrainz-api'
                         }
                         catch {
                             $mirrorReleaseGroupUri = $releaseGroupUri.Replace('https://musicbrainz.org/', 'https://musicbrainz.eu/')
-                            $releaseGroupData = Invoke-JsonRequestWithRetry -Uri $mirrorReleaseGroupUri -Headers $headers -CachePath $releaseGroupCachePath -MaximumAttempts 3 -SourceName 'MusicBrainz genres mirror'
+                            $releaseGroupData = Invoke-JsonRequestWithRetry -Uri $mirrorReleaseGroupUri -Headers $headers -CachePath $releaseGroupCachePath -MaximumAttempts 5 -SourceName 'MusicBrainz release-group details mirror' -MinimumIntervalMilliseconds 1100 -ThrottleKey 'musicbrainz-mirror'
                         }
                         $musicBrainzGroupDate = ConvertTo-IsoDate (Get-ObjectProperty -Object $releaseGroupData -Name 'first-release-date')
+                        $releaseGroupAliases = @(Get-ObjectProperty -Object $releaseGroupData -Name 'aliases') | ForEach-Object {
+                            Get-ObjectProperty -Object $_ -Name 'name'
+                        } | Where-Object { -not [string]::IsNullOrWhiteSpace([string] $_) }
+                        $albumTitleAliases = @($albumTitle) + @($releaseGroupAliases) | Select-Object -Unique
                         $genreItems = @(Get-ObjectProperty -Object $releaseGroupData -Name 'genres') |
                             Sort-Object { [int](Get-ObjectProperty -Object $_ -Name 'count') } -Descending
                         $musicBrainzGenres = @($genreItems | Select-Object -First 5 | ForEach-Object {
@@ -1064,38 +1368,29 @@ try {
 
                 try {
                     $appleSearchTerm = [Uri]::EscapeDataString("$albumArtist $albumTitle")
-                    $appleUri = "https://itunes.apple.com/search?term=$appleSearchTerm&media=music&entity=album&limit=25&country=US"
-                    $appleCachePath = Join-Path $cacheRoot "Apple\$releaseId.json"
-                    $appleData = Invoke-JsonRequestWithRetry -Uri $appleUri -Headers $headers -CachePath $appleCachePath -MaximumAttempts 3 -SourceName 'Apple iTunes Search'
+                    $appleCountry = if ($releaseCountry -match '^[A-Za-z]{2}$') { $releaseCountry.ToUpperInvariant() } else { 'US' }
+                    $appleLanguage = if ($appleCountry -eq 'JP') { 'ja_jp' } else { 'en_us' }
+                    $appleUri = "https://itunes.apple.com/search?term=$appleSearchTerm&media=music&entity=album&limit=25&country=$appleCountry&lang=$appleLanguage"
+                    $appleCachePath = Join-Path $cacheRoot "Apple-v2\$releaseId-$appleCountry.json"
+                    $appleData = Invoke-JsonRequestWithRetry -Uri $appleUri -Headers $headers -CachePath $appleCachePath -MaximumAttempts 5 -SourceName 'Apple iTunes Search' -MinimumIntervalMilliseconds 3100 -ThrottleKey 'apple-search-api'
 
-                    $expectedAlbum = Normalize-MatchText $albumTitle
-                    $expectedArtist = Normalize-MatchText $albumArtist
-                    $bestAppleResult = $null
-                    $bestAppleScore = 0
+                    $appleResultIndex = 0
                     foreach ($appleResult in @(Get-ObjectProperty -Object $appleData -Name 'results')) {
-                        $candidateAlbum = Normalize-MatchText ([string](Get-ObjectProperty -Object $appleResult -Name 'collectionName'))
-                        $candidateArtist = Normalize-MatchText ([string](Get-ObjectProperty -Object $appleResult -Name 'artistName'))
-                        $candidateTrackCount = Get-ObjectProperty -Object $appleResult -Name 'trackCount'
-                        $score = 0
-                        if ($candidateAlbum -eq $expectedAlbum -and $candidateAlbum -ne '') {
-                            $score += 60
-                        }
-                        elseif ($candidateAlbum -ne '' -and $expectedAlbum -ne '' -and ($candidateAlbum.Contains($expectedAlbum) -or $expectedAlbum.Contains($candidateAlbum))) {
-                            $score += 30
-                        }
-                        if ($candidateArtist -eq $expectedArtist -and $candidateArtist -ne '') {
-                            $score += 30
-                        }
-                        elseif ($candidateArtist -ne '' -and $expectedArtist -ne '' -and ($candidateArtist.Contains($expectedArtist) -or $expectedArtist.Contains($candidateArtist))) {
-                            $score += 15
-                        }
-                        if ($null -ne $candidateTrackCount -and [int] $candidateTrackCount -eq $tracks.Count) {
-                            $score += 10
-                        }
+                        $score = Get-AlbumMatchScore `
+                            -CandidateAlbum ([string](Get-ObjectProperty -Object $appleResult -Name 'collectionName')) `
+                            -CandidateArtist ([string](Get-ObjectProperty -Object $appleResult -Name 'artistName')) `
+                            -CandidateTrackCount (Get-ObjectProperty -Object $appleResult -Name 'trackCount') `
+                            -CandidateDate ([string](Get-ObjectProperty -Object $appleResult -Name 'releaseDate')) `
+                            -ExpectedAlbumAliases $albumTitleAliases `
+                            -ExpectedArtist $albumArtist `
+                            -ExpectedTrackCount $tracks.Count `
+                            -ExpectedYear (Get-YearFromDate (ConvertTo-IsoDate $releaseDate)) `
+                            -ResultIndex $appleResultIndex
                         if ($score -gt $bestAppleScore) {
                             $bestAppleScore = $score
                             $bestAppleResult = $appleResult
                         }
+                        $appleResultIndex++
                     }
 
                     if ($null -ne $bestAppleResult -and $bestAppleScore -ge 70) {
@@ -1121,13 +1416,13 @@ try {
 
                 if (-not [string]::IsNullOrWhiteSpace($releaseGroupId)) {
                     try {
-                        $sparql = "SELECT ?item ?date ?genreLabel WHERE { ?item wdt:P436 `"$releaseGroupId`". OPTIONAL { ?item wdt:P577 ?date. } OPTIONAL { ?item wdt:P136 ?genre. } SERVICE wikibase:label { bd:serviceParam wikibase:language `"en,zh`". } }"
+                        $sparql = "SELECT ?item ?date ?genreLabel ?cover WHERE { ?item wdt:P436 `"$releaseGroupId`". OPTIONAL { ?item wdt:P577 ?date. } OPTIONAL { ?item wdt:P136 ?genre. } OPTIONAL { ?item wdt:P18 ?cover. } SERVICE wikibase:label { bd:serviceParam wikibase:language `"en,zh`". } }"
                         $wikidataUri = "https://query.wikidata.org/sparql?query=$([Uri]::EscapeDataString($sparql))&format=json"
                         $wikidataHeaders = @{
                             'User-Agent' = $MusicBrainzUserAgent
                             'Accept'     = 'application/sparql-results+json'
                         }
-                        $wikidataCachePath = Join-Path $cacheRoot "Wikidata\$releaseGroupId.json"
+                        $wikidataCachePath = Join-Path $cacheRoot "Wikidata-v2\$releaseGroupId.json"
                         $wikidataData = Invoke-JsonRequestWithRetry -Uri $wikidataUri -Headers $wikidataHeaders -CachePath $wikidataCachePath -MaximumAttempts 3 -SourceName 'Wikidata'
                         $wikidataResults = Get-ObjectProperty -Object $wikidataData -Name 'results'
                         $wikidataBindings = @(Get-ObjectProperty -Object $wikidataResults -Name 'bindings')
@@ -1141,6 +1436,16 @@ try {
                                 Get-ObjectProperty -Object $genreBinding -Name 'value'
                             } | Where-Object { -not [string]::IsNullOrWhiteSpace([string] $_) } | Select-Object -Unique)
                             $itemBinding = Get-ObjectProperty -Object $wikidataBindings[0] -Name 'item'
+                            $coverBindings = @($wikidataBindings | ForEach-Object {
+                                $coverBinding = Get-ObjectProperty -Object $_ -Name 'cover'
+                                Get-ObjectProperty -Object $coverBinding -Name 'value'
+                            } | Where-Object { -not [string]::IsNullOrWhiteSpace([string] $_) } | Select-Object -Unique)
+                            if ($coverBindings.Count -gt 0) {
+                                $wikidataCoverUri = [string] $coverBindings[0]
+                                if ($wikidataCoverUri -notmatch '\?') {
+                                    $wikidataCoverUri += '?width=1200'
+                                }
+                            }
                             $metadataEvidence.Add([pscustomobject]@{
                                 source     = 'Wikidata'
                                 weight     = 80
@@ -1230,7 +1535,7 @@ try {
     if (-not $NoLyrics) {
         $lyricsCacheRoot = Join-Path $cacheRoot 'Lyrics\LRCLIB-v2'
         $lyricsHeaders = @{
-            'User-Agent' = 'BinToAudioWindows/2.2 (https://github.com/Gavin-LHX/cdrom-dump-tools)'
+            'User-Agent' = 'BinToAudioWindows/2.3 (https://github.com/Gavin-LHX/cdrom-dump-tools)'
             'Accept'     = 'application/json'
         }
         $lyricsStatusCounts = @{
@@ -1385,63 +1690,208 @@ try {
                 }
             })
         }
-        $metadataJson = $metadataSummary | ConvertTo-Json -Depth 8
-        [IO.File]::WriteAllText((Join-Path $workDirectory 'musicbrainz-metadata.json'), $metadataJson, [Text.UTF8Encoding]::new($false))
-
+        $coverResult = $null
         if (-not $NoCover) {
-            $coverUrls = [System.Collections.Generic.List[string]]::new()
+            $coverCandidates = [System.Collections.Generic.List[object]]::new()
             $coverCacheKey = $releaseId
+            $imageHeaders = @{
+                'User-Agent' = $MusicBrainzUserAgent
+                'Accept'     = 'image/*,*/*;q=0.8'
+            }
+
             if (-not [string]::IsNullOrWhiteSpace($releaseId)) {
-                $coverUrls.Add("https://coverartarchive.org/release/$releaseId/front-500")
+                try {
+                    $candidate = Get-CoverArtArchiveCandidate -EntityType 'release' -EntityId $releaseId -Headers $headers -CacheRoot $cacheRoot
+                    if ($null -ne $candidate) {
+                        $coverCandidates.Add($candidate)
+                    }
+                }
+                catch {
+                    Write-Host "Cover Art Archive release lookup unavailable: $($_.Exception.Message)"
+                }
             }
             if (-not [string]::IsNullOrWhiteSpace($releaseGroupId)) {
-                $coverUrls.Add("https://coverartarchive.org/release-group/$releaseGroupId/front-500")
+                try {
+                    $candidate = Get-CoverArtArchiveCandidate -EntityType 'release-group' -EntityId $releaseGroupId -Headers $headers -CacheRoot $cacheRoot
+                    if ($null -ne $candidate) {
+                        $coverCandidates.Add($candidate)
+                    }
+                }
+                catch {
+                    Write-Host "Cover Art Archive release-group lookup unavailable: $($_.Exception.Message)"
+                }
                 if ([string]::IsNullOrWhiteSpace($coverCacheKey)) {
                     $coverCacheKey = $releaseGroupId
                 }
             }
 
-            $candidateCoverPath = Join-Path $workDirectory 'cover.jpg'
-            $coverCachePath = $null
-            if (-not [string]::IsNullOrWhiteSpace($coverCacheKey)) {
-                $coverCachePath = Join-Path $cacheRoot "Cover\$coverCacheKey.jpg"
+            if ($null -ne $bestAppleResult -and $bestAppleScore -ge 70) {
+                $appleArtworkUri = Get-HighResolutionAppleArtworkUri ([string](Get-ObjectProperty -Object $bestAppleResult -Name 'artworkUrl100'))
+                if (-not [string]::IsNullOrWhiteSpace($appleArtworkUri)) {
+                    $coverCandidates.Add([pscustomobject]@{
+                        Source     = 'Apple iTunes Search'
+                        Uri        = $appleArtworkUri
+                        Match      = "Album alias/artist/track-count/year score $bestAppleScore"
+                        Confidence = [Math]::Min(99, $bestAppleScore)
+                    })
+                }
             }
 
-            if ($null -ne $coverCachePath -and (Test-Path -LiteralPath $coverCachePath)) {
-                [IO.File]::Copy($coverCachePath, $candidateCoverPath, $true)
-                $coverPath = $candidateCoverPath
-                Write-Host 'Using cached cover art.'
+            try {
+                $deezerSearchTitle = @($albumTitleAliases | Where-Object { $_ -match '^[\x00-\x7F]+$' } | Select-Object -First 1)
+                if ($deezerSearchTitle.Count -eq 0) {
+                    $deezerSearchTitle = @($albumTitle)
+                }
+                $deezerTerm = [Uri]::EscapeDataString("$albumArtist $($deezerSearchTitle[0])")
+                $deezerUri = "https://api.deezer.com/search/album?q=$deezerTerm&limit=25"
+                $deezerCachePath = Join-Path $cacheRoot "Deezer\$coverCacheKey.json"
+                $deezerData = Invoke-JsonRequestWithRetry -Uri $deezerUri -Headers $headers -CachePath $deezerCachePath -MaximumAttempts 5 -SourceName 'Deezer album search' -MinimumIntervalMilliseconds 500
+                $bestDeezerResult = $null
+                $bestDeezerScore = 0
+                $deezerResultIndex = 0
+                foreach ($deezerResult in @(Get-ObjectProperty -Object $deezerData -Name 'data')) {
+                    $deezerArtist = Get-ObjectProperty -Object $deezerResult -Name 'artist'
+                    $deezerScore = Get-AlbumMatchScore `
+                        -CandidateAlbum ([string](Get-ObjectProperty -Object $deezerResult -Name 'title')) `
+                        -CandidateArtist ([string](Get-ObjectProperty -Object $deezerArtist -Name 'name')) `
+                        -CandidateTrackCount (Get-ObjectProperty -Object $deezerResult -Name 'nb_tracks') `
+                        -CandidateDate ([string](Get-ObjectProperty -Object $deezerResult -Name 'release_date')) `
+                        -ExpectedAlbumAliases $albumTitleAliases `
+                        -ExpectedArtist $albumArtist `
+                        -ExpectedTrackCount $tracks.Count `
+                        -ExpectedYear $releaseYear `
+                        -ResultIndex $deezerResultIndex
+                    if ($deezerScore -gt $bestDeezerScore) {
+                        $bestDeezerScore = $deezerScore
+                        $bestDeezerResult = $deezerResult
+                    }
+                    $deezerResultIndex++
+                }
+
+                if ($null -ne $bestDeezerResult -and $bestDeezerScore -ge 70) {
+                    $deezerArtworkUri = Get-ObjectProperty -Object $bestDeezerResult -Name 'cover_xl'
+                    if ([string]::IsNullOrWhiteSpace([string] $deezerArtworkUri)) {
+                        $deezerArtworkUri = Get-ObjectProperty -Object $bestDeezerResult -Name 'cover_big'
+                    }
+                    if (-not [string]::IsNullOrWhiteSpace([string] $deezerArtworkUri)) {
+                        $coverCandidates.Add([pscustomobject]@{
+                            Source     = 'Deezer'
+                            Uri        = [string] $deezerArtworkUri
+                            Match      = "Album alias/artist/track-count/year score $bestDeezerScore"
+                            Confidence = [Math]::Min(95, $bestDeezerScore)
+                        })
+                    }
+                }
             }
-            else {
-                foreach ($coverUrl in $coverUrls) {
+            catch {
+                Write-Host "Deezer cover lookup unavailable: $($_.Exception.Message)"
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($wikidataCoverUri)) {
+                $coverCandidates.Add([pscustomobject]@{
+                    Source     = 'Wikidata / Wikimedia Commons'
+                    Uri        = $wikidataCoverUri
+                    Match      = 'MusicBrainz release-group ID to Wikidata P18'
+                    Confidence = 85
+                })
+            }
+
+            $candidateCoverPath = Join-Path $workDirectory 'cover.jpg'
+            $coverCachePath = $null
+            $coverCacheMetadataPath = $null
+            if (-not [string]::IsNullOrWhiteSpace($coverCacheKey)) {
+                $coverCachePath = Join-Path $cacheRoot "Cover-v2\$coverCacheKey.jpg"
+                $coverCacheMetadataPath = Join-Path $cacheRoot "Cover-v2\$coverCacheKey.json"
+            }
+
+            $usingCachedCover = $false
+            if ($null -ne $coverCachePath -and (Test-Path -LiteralPath $coverCachePath)) {
+                $usingCachedCover = Convert-CoverImageToJpeg -InputPath $coverCachePath -OutputPath $candidateCoverPath -FfmpegPath $FfmpegPath
+                if ($usingCachedCover) {
+                    $coverPath = $candidateCoverPath
+                }
+                if ($null -ne $coverCacheMetadataPath -and (Test-Path -LiteralPath $coverCacheMetadataPath)) {
                     try {
-                        Invoke-FileDownloadWithRetry -Uri $coverUrl -Headers $headers -Destination $candidateCoverPath
+                        $coverResult = [IO.File]::ReadAllText($coverCacheMetadataPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+                    }
+                    catch {
+                    }
+                }
+                if ($null -eq $coverResult) {
+                    $coverResult = [pscustomobject]@{
+                        Source     = 'Local cover cache'
+                        Uri        = $null
+                        Match      = 'Cached by MusicBrainz release ID'
+                        Confidence = $null
+                    }
+                }
+                if ($usingCachedCover) {
+                    Write-Host "Using cached cover art from $($coverResult.Source)."
+                }
+                else {
+                    $coverResult = $null
+                    Write-Warning 'The cached cover is invalid; trying online cover sources again.'
+                }
+            }
+            if (-not $usingCachedCover) {
+                foreach ($coverCandidate in $coverCandidates) {
+                    $rawCoverPath = Join-Path $workDirectory ".cover-download-$([guid]::NewGuid().ToString('N')).bin"
+                    try {
+                        Write-Host "Trying cover source: $($coverCandidate.Source)"
+                        Invoke-FileDownloadWithRetry -Uri $coverCandidate.Uri -Headers $imageHeaders -Destination $rawCoverPath -MaximumAttempts 5 -MinimumIntervalMilliseconds 250
+                        if (-not (Convert-CoverImageToJpeg -InputPath $rawCoverPath -OutputPath $candidateCoverPath -FfmpegPath $FfmpegPath)) {
+                            throw 'The downloaded response is not a usable image.'
+                        }
+
                         $coverPath = $candidateCoverPath
+                        $coverResult = $coverCandidate
                         if ($null -ne $coverCachePath) {
                             $coverCacheParent = Split-Path -Parent $coverCachePath
                             if (-not (Test-Path -LiteralPath $coverCacheParent)) {
                                 $null = New-Item -ItemType Directory -Path $coverCacheParent -Force
                             }
                             [IO.File]::Copy($coverPath, $coverCachePath, $true)
+                            $coverCacheMetadataJson = $coverResult | ConvertTo-Json -Depth 4
+                            [IO.File]::WriteAllText($coverCacheMetadataPath, $coverCacheMetadataJson, [Text.UTF8Encoding]::new($false))
                         }
-                        Write-Host 'Cover art downloaded.'
+                        Write-Host "Cover art downloaded from $($coverResult.Source)."
                         break
                     }
                     catch {
+                        Write-Host "Cover source failed: $($coverCandidate.Source) - $($_.Exception.Message)"
                         if (Test-Path -LiteralPath $candidateCoverPath) {
                             Remove-Item -LiteralPath $candidateCoverPath -Force
+                        }
+                    }
+                    finally {
+                        if (Test-Path -LiteralPath $rawCoverPath) {
+                            Remove-Item -LiteralPath $rawCoverPath -Force
                         }
                     }
                 }
             }
 
             if ($null -eq $coverPath) {
-                Write-Warning 'No cover art was available from the Cover Art Archive.'
+                Write-Warning 'No sufficiently confident cover art was available from any configured source.'
             }
             else {
                 [IO.File]::Copy($coverPath, (Join-Path $workDirectory 'folder.jpg'), $true)
             }
         }
+
+        $metadataSummary['cover_art'] = if ($null -ne $coverResult) {
+            [ordered]@{
+                source     = $coverResult.Source
+                url        = $coverResult.Uri
+                match      = $coverResult.Match
+                confidence = $coverResult.Confidence
+            }
+        }
+        else {
+            $null
+        }
+        $metadataJson = $metadataSummary | ConvertTo-Json -Depth 8
+        [IO.File]::WriteAllText((Join-Path $workDirectory 'musicbrainz-metadata.json'), $metadataJson, [Text.UTF8Encoding]::new($false))
     }
 
     Write-Host "BIN:         $BinPath"

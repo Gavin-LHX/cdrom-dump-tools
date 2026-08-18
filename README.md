@@ -38,7 +38,9 @@
 - 自动计算 MusicBrainz Disc ID 并匹配正确发行版本。
 - 自动写入曲名、歌手、专辑、年份、日期、流派、ISRC、条码和 MusicBrainz ID。
 - 使用 MusicBrainz、Apple iTunes Search 和 Wikidata 比对年份及流派。
-- 从 Cover Art Archive 获取封面，生成 `cover.jpg`、`folder.jpg`，并嵌入 FLAC。
+- 封面按“Cover Art Archive 精确发行版 → Cover Art Archive 发行组 → Apple iTunes Search → Deezer → Wikidata/Wikimedia Commons”顺序自动回退。
+- Apple 和 Deezer 候选会按专辑名/别名、艺人、轨数及年份交叉评分，低置信度图片不会写入；下载内容还会经 FFmpeg 解码验证并统一转换为 JPEG。
+- 生成 `cover.jpg`、`folder.jpg`，并把封面嵌入 FLAC；实际采用的来源、URL、匹配依据和置信度记录在 `musicbrainz-metadata.json`。
 - 自动命名为 `01 - 歌曲名.flac`。
 - 默认目录名：`艺术家 - 专辑 (年份) [FLAC/WAV]`。
 - 本地 `.lrc/.txt` 歌词优先；没有时使用 LRCLIB 精确匹配和高置信度搜索。
@@ -50,7 +52,8 @@
 - FLAC 写入 `LYRICS`、`SYNCEDLYRICS`、`LYRICS_SOURCE` 标签。
 - 纯音乐会标记为 `instrumental`，不会写入伪歌词。
 - 输出 `musicbrainz-metadata.json`、`lyrics-metadata.json`、播放列表和 SHA-256 校验和。
-- 在线服务不可用时使用 30 天缓存或降级转换，不中断音频处理。
+- MusicBrainz 请求全局限制为最多每 1.1 秒一次；遇到 429、503 或临时 5xx 时遵循 `Retry-After` 或指数退避，最多重试 5 次后再使用镜像/缓存。
+- 在线服务不可用时使用 30 天缓存、多源回退或降级转换，不中断音频处理。
 - 歌词缓存使用 `LRCLIB-v2` 命名空间，自动绕过旧版可能存在的乱码或错误空结果缓存。
 
 ## Linux：安装与读取 CD
@@ -170,6 +173,8 @@ Linux 转换器是基础离线版本，只写入轨号和 TOC 中已有的 ISRC�
 - 元数据、封面和歌词功能需要网络连接
 
 脚本会优先使用 `PATH` 中的 `ffmpeg.exe`，也可通过 `-FfmpegPath` 明确指定。
+
+MusicBrainz 要求客户端不超过每秒一次请求。脚本会在所有 MusicBrainz 主站请求之间统一等待 1.1 秒，并缓存结果；HTTP 503 既可能是当前 IP/客户端速率过高，也可能是服务整体繁忙，因此脚本会自动退避重试，不会立即丢弃专辑信息。Apple Search API 也有独立节流和 30 天缓存。
 
 ### 拖放使用
 
@@ -298,9 +303,10 @@ sha256sum --check SHA256SUMS
 ## 使用的在线服务
 
 - [MusicBrainz](https://musicbrainz.org/)：Disc ID、发行版和曲目信息
-- [Cover Art Archive](https://coverartarchive.org/)：封面
-- [Apple iTunes Search API](https://performance-partners.apple.com/search-api)：年份和流派交叉验证
-- [Wikidata](https://www.wikidata.org/)：发行日期和流派交叉验证
+- [Cover Art Archive](https://coverartarchive.org/)：精确发行版与发行组封面
+- [Apple iTunes Search API](https://performance-partners.apple.com/search-api)：年份/流派交叉验证及高置信度封面回退
+- [Deezer](https://developers.deezer.com/api)：高置信度封面回退
+- [Wikidata](https://www.wikidata.org/) / [Wikimedia Commons](https://commons.wikimedia.org/)：发行日期、流派及 P18 封面回退
 - [LRCLIB](https://lrclib.net/)：同步及纯文本歌词
 - [musicbrainz.eu](https://musicbrainz.eu/)：MusicBrainz 查询镜像
 
