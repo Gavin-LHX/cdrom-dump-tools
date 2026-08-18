@@ -39,6 +39,7 @@
 - 自动写入曲名、歌手、专辑、年份、日期、流派、ISRC、条码和 MusicBrainz ID。
 - 使用 MusicBrainz、Apple iTunes Search 和 Wikidata 比对年份及流派。
 - 封面按“Cover Art Archive 精确发行版 → Cover Art Archive 发行组 → Apple iTunes Search → Deezer → Wikidata/Wikimedia Commons”顺序自动回退。
+- Windows PowerShell 5.1 下使用 .NET 二进制流保存封面，兼容含中文、日文等非 ASCII 字符的输出路径；本地写盘错误不会再被误判为网络故障反复等待。
 - Apple 和 Deezer 候选会按专辑名/别名、艺人、轨数及年份交叉评分，低置信度图片不会写入；下载内容还会经 FFmpeg 解码验证并统一转换为 JPEG。
 - 生成 `cover.jpg`、`folder.jpg`，并把封面嵌入 FLAC；实际采用的来源、URL、匹配依据和置信度记录在 `musicbrainz-metadata.json`。
 - 自动命名为 `01 - 歌曲名.flac`。

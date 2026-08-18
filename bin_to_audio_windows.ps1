@@ -21,7 +21,7 @@ param(
     [ValidateRange(0, 1000)]
     [int] $ReleaseIndex = 0,
 
-    [string] $MusicBrainzUserAgent = 'BinToAudioWindows/2.3 (https://github.com/Gavin-LHX/cdrom-dump-tools)'
+    [string] $MusicBrainzUserAgent = 'BinToAudioWindows/2.3.1 (https://github.com/Gavin-LHX/cdrom-dump-tools)'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -199,6 +199,59 @@ function Get-Utf8WebResponseText {
     return [string] $content
 }
 
+function Save-WebResponseToFile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object] $Response,
+
+        [Parameter(Mandatory = $true)]
+        [string] $Destination
+    )
+
+    $fullDestination = [IO.Path]::GetFullPath($Destination)
+    $destinationParent = [IO.Path]::GetDirectoryName($fullDestination)
+    if ([string]::IsNullOrWhiteSpace($destinationParent) -or -not [IO.Directory]::Exists($destinationParent)) {
+        throw [IO.DirectoryNotFoundException]::new("Download destination directory does not exist: $destinationParent")
+    }
+
+    # Windows PowerShell 5.1 Invoke-WebRequest -OutFile can throw a
+    # FileNotFoundException after downloading to paths that contain non-ASCII
+    # characters. Writing the response through System.IO avoids that bug.
+    $rawStream = Get-ObjectProperty -Object $Response -Name 'RawContentStream'
+    if ($null -ne $rawStream) {
+        if ($rawStream -is [IO.MemoryStream]) {
+            [IO.File]::WriteAllBytes($fullDestination, $rawStream.ToArray())
+            return
+        }
+
+        if ($rawStream.CanSeek) {
+            $rawStream.Position = 0
+        }
+
+        $destinationStream = [IO.File]::Open(
+            $fullDestination,
+            [IO.FileMode]::Create,
+            [IO.FileAccess]::Write,
+            [IO.FileShare]::None
+        )
+        try {
+            $rawStream.CopyTo($destinationStream)
+        }
+        finally {
+            $destinationStream.Dispose()
+        }
+        return
+    }
+
+    $content = Get-ObjectProperty -Object $Response -Name 'Content'
+    if ($content -is [byte[]]) {
+        [IO.File]::WriteAllBytes($fullDestination, $content)
+        return
+    }
+
+    throw 'The download response did not contain a binary stream.'
+}
+
 function Get-WebExceptionStatusCode {
     param([Exception] $Exception)
 
@@ -280,11 +333,25 @@ function Test-TransientWebFailure {
     param([Exception] $Exception)
 
     $statusCode = Get-WebExceptionStatusCode -Exception $Exception
-    if ($null -eq $statusCode) {
-        return $true
+    if ($null -ne $statusCode) {
+        return $statusCode -in @(408, 425, 429, 500, 502, 503, 504)
     }
 
-    return $statusCode -in @(408, 425, 429, 500, 502, 503, 504)
+    $currentException = $Exception
+    while ($null -ne $currentException) {
+        $exceptionTypeName = $currentException.GetType().FullName
+        if (
+            $currentException -is [Net.WebException] -or
+            $currentException -is [TimeoutException] -or
+            $currentException -is [Threading.Tasks.TaskCanceledException] -or
+            $exceptionTypeName -eq 'System.Net.Http.HttpRequestException'
+        ) {
+            return $true
+        }
+        $currentException = $currentException.InnerException
+    }
+
+    return $false
 }
 
 function Wait-WebRequestInterval {
@@ -353,7 +420,7 @@ function Invoke-JsonRequestWithRetry {
             $response = Invoke-WebRequest -Method Get -Uri $Uri -Headers $Headers -TimeoutSec 30 -MaximumRedirection 8 -UseBasicParsing
             $json = Get-Utf8WebResponseText -Response $response
             if ([string]::IsNullOrWhiteSpace($json)) {
-                throw 'The metadata server returned an empty response.'
+                throw [Net.WebException]::new('The metadata server returned an empty response.')
             }
 
             $parsed = $json | ConvertFrom-Json
@@ -415,9 +482,10 @@ function Invoke-FileDownloadWithRetry {
     for ($attempt = 1; $attempt -le $MaximumAttempts; $attempt++) {
         try {
             Wait-WebRequestInterval -Uri $Uri -MinimumIntervalMilliseconds $MinimumIntervalMilliseconds -ThrottleKey $ThrottleKey
-            Invoke-WebRequest -Method Get -Uri $Uri -Headers $Headers -TimeoutSec 30 -MaximumRedirection 8 -UseBasicParsing -OutFile $Destination
+            $response = Invoke-WebRequest -Method Get -Uri $Uri -Headers $Headers -TimeoutSec 30 -MaximumRedirection 8 -UseBasicParsing
+            Save-WebResponseToFile -Response $response -Destination $Destination
             if ((Get-Item -LiteralPath $Destination).Length -le 0) {
-                throw 'The download was empty.'
+                throw [Net.WebException]::new('The download was empty.')
             }
             return
         }
@@ -1535,7 +1603,7 @@ try {
     if (-not $NoLyrics) {
         $lyricsCacheRoot = Join-Path $cacheRoot 'Lyrics\LRCLIB-v2'
         $lyricsHeaders = @{
-            'User-Agent' = 'BinToAudioWindows/2.3 (https://github.com/Gavin-LHX/cdrom-dump-tools)'
+            'User-Agent' = 'BinToAudioWindows/2.3.1 (https://github.com/Gavin-LHX/cdrom-dump-tools)'
             'Accept'     = 'application/json'
         }
         $lyricsStatusCounts = @{
