@@ -19,6 +19,9 @@
 
 - 使用 `cdrdao read-cd --read-raw` 保存原始扇区和 TOC。
 - 音频读取使用 `--paranoia-mode 3`。
+- 可选 `--verify-passes 2`：默认以 4× 独立读取两遍，同时比较 BIN 和 TOC 的 SHA-256。
+- 双遍一致时只保留一份镜像；不一致时保留两次结果、两份读取日志并以状态码 2 警告。
+- 每遍的 Q 子通道 CRC 计数会写入 `verification-report.txt`，但不会单凭计数覆盖镜像。
 - 支持纯音频、数据和混合模式 CD 的 BIN/TOC 归档。
 - 生成 `SHA256SUMS`、`disc-info.txt` 和 `dump-metadata.txt`。
 - 根据 MusicBrainz Disc ID 查询专辑信息。
@@ -77,6 +80,21 @@ sudo /dump_cdrom.sh --speed 4
 sudo /dump_cdrom.sh --speed 2
 ```
 
+完整读取两遍并比较 BIN/TOC 哈希：
+
+```bash
+# 未指定 --speed 时，两遍默认均为 4×
+sudo /dump_cdrom.sh --verify-passes 2
+
+# 两遍均使用更低的 2×
+sudo /dump_cdrom.sh --verify-passes 2 --speed 2
+
+# 单独修改双遍校验的默认限速
+sudo /dump_cdrom.sh --verify-passes 2 --verify-speed 2
+```
+
+如果同时指定高于校验速度的 `--speed`，首遍使用明确指定的速度，第二遍回落到校验速度；如果 `--speed` 更低，两遍都使用更低速度。两遍哈希一致时，脚本保留首遍作为正式 BIN/TOC，并保留两份 `cdrdao` 日志和校验报告。哈希不一致时，首遍仍使用标准文件名，第二遍保存在 `verification-pass-2/`；脚本不会自动弹盘，并以状态码 2 结束。
+
 其他示例：
 
 ```bash
@@ -102,6 +120,8 @@ sudo /dump_cdrom.sh --dry-run
 export CDROM_DEVICE=/dev/sr0
 export CDROM_DUMP_DIR=/data/cd-images
 export CDROM_NO_METADATA=1
+export CDROM_VERIFY_PASSES=2
+export CDROM_VERIFY_SPEED=4
 ```
 
 ## Linux：将 BIN/TOC 转换为音轨
@@ -206,25 +226,38 @@ Found 92 Q sub-channels with CRC errors.
 
 该提示表示部分 Q 子通道帧的 CRC 未通过。Q 子通道主要保存轨道号、时间、INDEX、pregap 和 ISRC 等控制信息，不等同于音频 PCM 扇区损坏。只要读取最终成功，并且没有同时出现 `read error`、`SCSI error`、`uncorrectable`、`Padding with ... zero sectors` 或 `L-EC errors`，少量 Q CRC 通常不致命。
 
+脚本不能根据这条提示只重读 CRC 错误位置：当前 `cdrdao` 对脚本输出的是汇总数量，没有提供可直接重读的逐帧地址；Q 子通道地址也不能可靠等同于需要替换的音频 PCM 区间。强行按该数字覆盖局部镜像，反而可能把正确音频换成另一遍的不稳定结果。`--paranoia-mode 3` 已负责音频读取过程中的重叠检查与可疑区域重读；归档层面再使用双遍完整哈希比较，判断依据更稳妥。
+
 如需提高可信度：
 
 1. 清洁光盘并使用 `--speed 4` 或 `--speed 2` 重新读取。
-2. 对同一张盘读取两次，比较 BIN 的 SHA-256。
+2. 使用 `--verify-passes 2` 自动低速读取两遍，并同时比较 BIN 和 TOC 的 SHA-256。
 3. 如果哈希不同或能听到爆音、跳音，换另一台光驱读取。
 4. 不要仅为了隐藏提示使用 `--fast-toc`，否则可能失去详细的 INDEX/pregap 检测。
 
 ## 输出与完整性
 
-镜像目录示例：
+镜像目录示例（双遍校验一致时）：
 
 ```text
 艺术家 - 专辑 (2026) [BIN-TOC]/
 ├── cdrom-YYYYMMDD-HHMMSS.bin
 ├── cdrom-YYYYMMDD-HHMMSS.toc
+├── cdrdao-pass-1.log
+├── cdrdao-pass-2.log
 ├── disc-info.txt
 ├── dump-metadata.txt
+├── verification-report.txt
 ├── musicbrainz-metadata.json
 └── SHA256SUMS
+```
+
+若双遍校验不一致，还会额外保留：
+
+```text
+verification-pass-2/
+├── cdrom-YYYYMMDD-HHMMSS.bin
+└── cdrom-YYYYMMDD-HHMMSS.toc
 ```
 
 增强转换目录示例：
@@ -269,3 +302,4 @@ sha256sum --check SHA256SUMS
 ## 安全说明
 
 仓库不包含服务器地址、账号、密码、API Token、光盘镜像、缓存或用户媒体文件。运行前请检查输出目录权限，并妥善保存生成的 BIN 文件。
+
