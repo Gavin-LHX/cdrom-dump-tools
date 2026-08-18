@@ -598,4 +598,3 @@ if ((VERIFY_MISMATCH)); then
   warn 'inspect verification-report.txt and both cdrdao logs; exit status is 2'
   exit 2
 fi
-
