@@ -21,7 +21,7 @@ param(
     [ValidateRange(0, 1000)]
     [int] $ReleaseIndex = 0,
 
-    [string] $MusicBrainzUserAgent = 'BinToAudioWindows/2.1 (https://github.com/Gavin-LHX/cdrom-dump-tools)'
+    [string] $MusicBrainzUserAgent = 'BinToAudioWindows/2.2 (https://github.com/Gavin-LHX/cdrom-dump-tools)'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -157,6 +157,47 @@ function Get-MusicBrainzDiscIdentity {
     }
 }
 
+function Get-Utf8WebResponseText {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object] $Response
+    )
+
+    $rawStream = Get-ObjectProperty -Object $Response -Name 'RawContentStream'
+    if ($null -ne $rawStream) {
+        $memoryStream = $null
+        try {
+            if ($rawStream -is [IO.MemoryStream]) {
+                [byte[]] $bytes = $rawStream.ToArray()
+            }
+            else {
+                if ($rawStream.CanSeek) {
+                    $rawStream.Position = 0
+                }
+                $memoryStream = [IO.MemoryStream]::new()
+                $rawStream.CopyTo($memoryStream)
+                [byte[]] $bytes = $memoryStream.ToArray()
+            }
+
+            if ($bytes.Length -gt 0) {
+                $utf8 = [Text.UTF8Encoding]::new($false, $true)
+                return $utf8.GetString($bytes).TrimStart([char] 0xFEFF)
+            }
+        }
+        finally {
+            if ($null -ne $memoryStream) {
+                $memoryStream.Dispose()
+            }
+        }
+    }
+
+    $content = Get-ObjectProperty -Object $Response -Name 'Content'
+    if ($content -is [byte[]]) {
+        return [Text.Encoding]::UTF8.GetString($content)
+    }
+    return [string] $content
+}
+
 function Invoke-JsonRequestWithRetry {
     param(
         [Parameter(Mandatory = $true)]
@@ -185,12 +226,7 @@ function Invoke-JsonRequestWithRetry {
     for ($attempt = 1; $attempt -le $MaximumAttempts; $attempt++) {
         try {
             $response = Invoke-WebRequest -Method Get -Uri $Uri -Headers $Headers -TimeoutSec 30 -MaximumRedirection 8 -UseBasicParsing
-            if ($response.Content -is [byte[]]) {
-                $json = [Text.Encoding]::UTF8.GetString($response.Content)
-            }
-            else {
-                $json = [string] $response.Content
-            }
+            $json = Get-Utf8WebResponseText -Response $response
             if ([string]::IsNullOrWhiteSpace($json)) {
                 throw 'The metadata server returned an empty response.'
             }
@@ -297,6 +333,17 @@ function Normalize-MatchText {
     return [regex]::Replace($normalized, '[\W_]', '')
 }
 
+function Test-InstrumentalTitle {
+    param([string] $Title)
+
+    if ([string]::IsNullOrWhiteSpace($Title)) {
+        return $false
+    }
+
+    $marker = '(?:instrumental|inst\.?|off[\s_-]*vocal|karaoke|\u30AB\u30E9\u30AA\u30B1|\u30A4\u30F3\u30B9\u30C8(?:\u30A5\u30EB\u30E1\u30F3\u30BF\u30EB)?|\u4F34\u594F|\u7EAF\u97F3\u4E50|\u7D14\u97F3\u697D)'
+    return $Title -match "(?i)(?:^|[\s\-\u2013\u2014_\[\uFF08(\u3010])$marker(?:$|[\s\-\u2013\u2014_\]\uFF09)\u3011])"
+}
+
 function Get-Sha256Text {
     param([Parameter(Mandatory = $true)][string] $Text)
 
@@ -351,12 +398,7 @@ function Invoke-LrcLibJsonRequest {
     for ($attempt = 1; $attempt -le $MaximumAttempts; $attempt++) {
         try {
             $response = Invoke-WebRequest -Method Get -Uri $Uri -Headers $Headers -TimeoutSec 35 -MaximumRedirection 8 -UseBasicParsing
-            if ($response.Content -is [byte[]]) {
-                $json = [Text.Encoding]::UTF8.GetString($response.Content)
-            }
-            else {
-                $json = [string] $response.Content
-            }
+            $json = Get-Utf8WebResponseText -Response $response
             if ([string]::IsNullOrWhiteSpace($json)) {
                 throw 'LRCLIB returned an empty response.'
             }
@@ -472,6 +514,54 @@ function Get-LocalLyrics {
     return $null
 }
 
+function Select-LrcLibLyricsMatch {
+    param(
+        [object[]] $SearchResults,
+        [Parameter(Mandatory = $true)][string] $Title,
+        [Parameter(Mandatory = $true)][string] $Artist,
+        [Parameter(Mandatory = $true)][string] $Album,
+        [Parameter(Mandatory = $true)][int] $DurationSeconds
+    )
+
+    $expectedTitle = Normalize-MatchText $Title
+    $expectedArtist = Normalize-MatchText $Artist
+    $expectedAlbum = Normalize-MatchText $Album
+    $best = $null
+    $bestScore = 0
+    foreach ($candidate in @($SearchResults)) {
+        if ($null -eq $candidate) {
+            continue
+        }
+        $candidateTitle = Normalize-MatchText ([string](Get-ObjectProperty -Object $candidate -Name 'trackName'))
+        $candidateArtist = Normalize-MatchText ([string](Get-ObjectProperty -Object $candidate -Name 'artistName'))
+        $candidateAlbum = Normalize-MatchText ([string](Get-ObjectProperty -Object $candidate -Name 'albumName'))
+        $candidateDuration = Get-ObjectProperty -Object $candidate -Name 'duration'
+        $score = 0
+        if ($candidateTitle -eq $expectedTitle -and $candidateTitle -ne '') { $score += 60 }
+        elseif ($candidateTitle -ne '' -and ($candidateTitle.Contains($expectedTitle) -or $expectedTitle.Contains($candidateTitle))) { $score += 30 }
+        if ($candidateArtist -eq $expectedArtist -and $candidateArtist -ne '') { $score += 30 }
+        elseif ($candidateArtist -ne '' -and ($candidateArtist.Contains($expectedArtist) -or $expectedArtist.Contains($candidateArtist))) { $score += 15 }
+        if ($candidateAlbum -eq $expectedAlbum -and $candidateAlbum -ne '') { $score += 15 }
+        elseif ($candidateAlbum -ne '' -and $expectedAlbum -ne '' -and ($candidateAlbum.Contains($expectedAlbum) -or $expectedAlbum.Contains($candidateAlbum))) { $score += 8 }
+        if ($null -ne $candidateDuration) {
+            $durationDifference = [Math]::Abs([double] $candidateDuration - $DurationSeconds)
+            if ($durationDifference -le 2) { $score += 30 }
+            elseif ($durationDifference -le 5) { $score += 10 }
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string](Get-ObjectProperty -Object $candidate -Name 'syncedLyrics'))) { $score += 5 }
+        if ((Get-ObjectProperty -Object $candidate -Name 'instrumental') -eq $true -and -not (Test-InstrumentalTitle $Title)) { $score -= 40 }
+        if ($score -gt $bestScore) {
+            $bestScore = $score
+            $best = $candidate
+        }
+    }
+
+    return [pscustomobject]@{
+        Candidate = $best
+        Score     = $bestScore
+    }
+}
+
 function Resolve-LrcLibLyrics {
     param(
         [Parameter(Mandatory = $true)][string] $Title,
@@ -488,54 +578,80 @@ function Resolve-LrcLibLyrics {
     Start-Sleep -Milliseconds 350
     $exact = Invoke-LrcLibJsonRequest -Uri "https://lrclib.net/api/get?$query" -Headers $Headers -CachePath (Join-Path $CacheRoot "exact-$cacheKey.json")
     if ($null -ne $exact) {
+        $exactInstrumental = (Get-ObjectProperty -Object $exact -Name 'instrumental') -eq $true
         return [pscustomobject]@{
-            PlainLyrics  = Get-ObjectProperty -Object $exact -Name 'plainLyrics'
-            SyncedLyrics = Get-ObjectProperty -Object $exact -Name 'syncedLyrics'
-            Instrumental = (Get-ObjectProperty -Object $exact -Name 'instrumental') -eq $true
-            Source       = 'LRCLIB exact match'
-            Id           = Get-ObjectProperty -Object $exact -Name 'id'
+            Lyrics = [pscustomobject]@{
+                PlainLyrics  = Get-ObjectProperty -Object $exact -Name 'plainLyrics'
+                SyncedLyrics = Get-ObjectProperty -Object $exact -Name 'syncedLyrics'
+                Instrumental = $exactInstrumental
+                Source       = 'LRCLIB exact match'
+                Id           = Get-ObjectProperty -Object $exact -Name 'id'
+            }
+            Status         = if ($exactInstrumental) { 'instrumental' } else { 'found' }
+            Detail         = 'LRCLIB exact match'
+            BestScore      = $null
+            CandidateCount = 1
         }
     }
 
     $searchQuery = 'track_name={0}&artist_name={1}&album_name={2}' -f [Uri]::EscapeDataString($Title), [Uri]::EscapeDataString($Artist), [Uri]::EscapeDataString($Album)
     Start-Sleep -Milliseconds 350
-    $searchResults = @(Invoke-LrcLibJsonRequest -Uri "https://lrclib.net/api/search?$searchQuery" -Headers $Headers -CachePath (Join-Path $CacheRoot "search-$cacheKey.json"))
-    $expectedTitle = Normalize-MatchText $Title
-    $expectedArtist = Normalize-MatchText $Artist
-    $expectedAlbum = Normalize-MatchText $Album
-    $best = $null
-    $bestScore = 0
-    foreach ($candidate in $searchResults) {
-        $candidateTitle = Normalize-MatchText ([string](Get-ObjectProperty -Object $candidate -Name 'trackName'))
-        $candidateArtist = Normalize-MatchText ([string](Get-ObjectProperty -Object $candidate -Name 'artistName'))
-        $candidateAlbum = Normalize-MatchText ([string](Get-ObjectProperty -Object $candidate -Name 'albumName'))
-        $candidateDuration = Get-ObjectProperty -Object $candidate -Name 'duration'
-        $score = 0
-        if ($candidateTitle -eq $expectedTitle -and $candidateTitle -ne '') { $score += 60 }
-        elseif ($candidateTitle -ne '' -and ($candidateTitle.Contains($expectedTitle) -or $expectedTitle.Contains($candidateTitle))) { $score += 30 }
-        if ($candidateArtist -eq $expectedArtist -and $candidateArtist -ne '') { $score += 30 }
-        elseif ($candidateArtist -ne '' -and ($candidateArtist.Contains($expectedArtist) -or $expectedArtist.Contains($candidateArtist))) { $score += 15 }
-        if ($candidateAlbum -eq $expectedAlbum -and $candidateAlbum -ne '') { $score += 15 }
-        if ($null -ne $candidateDuration) {
-            $durationDifference = [Math]::Abs([double] $candidateDuration - $DurationSeconds)
-            if ($durationDifference -le 2) { $score += 30 }
-            elseif ($durationDifference -le 5) { $score += 10 }
-        }
-        if (-not [string]::IsNullOrWhiteSpace([string](Get-ObjectProperty -Object $candidate -Name 'syncedLyrics'))) { $score += 5 }
-        if ($score -gt $bestScore) {
-            $bestScore = $score
-            $best = $candidate
+    $fieldResults = @(Invoke-LrcLibJsonRequest -Uri "https://lrclib.net/api/search?$searchQuery" -Headers $Headers -CachePath (Join-Path $CacheRoot "field-$cacheKey.json"))
+    $allResults = [System.Collections.Generic.List[object]]::new()
+    foreach ($candidate in $fieldResults) {
+        if ($null -ne $candidate) {
+            $allResults.Add($candidate)
         }
     }
-    if ($null -eq $best -or $bestScore -lt 85) {
-        return $null
+    $match = Select-LrcLibLyricsMatch -SearchResults @($allResults) -Title $Title -Artist $Artist -Album $Album -DurationSeconds $DurationSeconds
+    $matchMode = 'field search'
+
+    if ($null -eq $match.Candidate -or $match.Score -lt 85) {
+        $broadQuery = [Uri]::EscapeDataString("$Artist $Title")
+        Start-Sleep -Milliseconds 350
+        $broadResults = @(Invoke-LrcLibJsonRequest -Uri "https://lrclib.net/api/search?q=$broadQuery" -Headers $Headers -CachePath (Join-Path $CacheRoot "broad-$cacheKey.json"))
+        foreach ($candidate in $broadResults) {
+            if ($null -ne $candidate) {
+                $allResults.Add($candidate)
+            }
+        }
+        $match = Select-LrcLibLyricsMatch -SearchResults @($allResults) -Title $Title -Artist $Artist -Album $Album -DurationSeconds $DurationSeconds
+        $matchMode = 'fallback search'
     }
+
+    if ($allResults.Count -eq 0 -or $null -eq $match.Candidate) {
+        return [pscustomobject]@{
+            Lyrics         = $null
+            Status         = 'not_found'
+            Detail         = 'LRCLIB returned no candidates'
+            BestScore      = 0
+            CandidateCount = 0
+        }
+    }
+    if ($match.Score -lt 85) {
+        return [pscustomobject]@{
+            Lyrics         = $null
+            Status         = 'low_confidence'
+            Detail         = "Best LRCLIB score $($match.Score) is below 85"
+            BestScore      = $match.Score
+            CandidateCount = $allResults.Count
+        }
+    }
+
+    $best = $match.Candidate
+    $bestInstrumental = (Get-ObjectProperty -Object $best -Name 'instrumental') -eq $true
     return [pscustomobject]@{
-        PlainLyrics  = Get-ObjectProperty -Object $best -Name 'plainLyrics'
-        SyncedLyrics = Get-ObjectProperty -Object $best -Name 'syncedLyrics'
-        Instrumental = (Get-ObjectProperty -Object $best -Name 'instrumental') -eq $true
-        Source       = "LRCLIB search match (score $bestScore)"
-        Id           = Get-ObjectProperty -Object $best -Name 'id'
+        Lyrics = [pscustomobject]@{
+            PlainLyrics  = Get-ObjectProperty -Object $best -Name 'plainLyrics'
+            SyncedLyrics = Get-ObjectProperty -Object $best -Name 'syncedLyrics'
+            Instrumental = $bestInstrumental
+            Source       = "LRCLIB $matchMode match (score $($match.Score))"
+            Id           = Get-ObjectProperty -Object $best -Name 'id'
+        }
+        Status         = if ($bestInstrumental) { 'instrumental' } else { 'found' }
+        Detail         = "LRCLIB $matchMode match (score $($match.Score))"
+        BestScore      = $match.Score
+        CandidateCount = $allResults.Count
     }
 }
 
@@ -706,6 +822,8 @@ try {
                 LyricsSource = $null
                 LyricsId     = $null
                 LyricsInstrumental = $false
+                LyricsStatus = if ($NoLyrics) { 'disabled' } else { 'not_checked' }
+                LyricsDetail = $null
             }
             $tracks.Add($currentTrack)
             continue
@@ -1110,29 +1228,56 @@ try {
 
     $lyricsManifest = [System.Collections.Generic.List[object]]::new()
     if (-not $NoLyrics) {
-        $lyricsCacheRoot = Join-Path $cacheRoot 'Lyrics\LRCLIB'
+        $lyricsCacheRoot = Join-Path $cacheRoot 'Lyrics\LRCLIB-v2'
         $lyricsHeaders = @{
-            'User-Agent' = 'BinToAudioWindows/2.1 (https://github.com/Gavin-LHX/cdrom-dump-tools)'
+            'User-Agent' = 'BinToAudioWindows/2.2 (https://github.com/Gavin-LHX/cdrom-dump-tools)'
             'Accept'     = 'application/json'
         }
-        $lyricsFound = 0
-        $instrumentalTracks = 0
-        $lyricsOnlineAvailable = $true
+        $lyricsStatusCounts = @{
+            found                = 0
+            instrumental         = 0
+            not_found            = 0
+            low_confidence       = 0
+            network_error        = 0
+            metadata_unavailable = 0
+        }
         foreach ($track in $tracks) {
             $lyricsResult = Get-LocalLyrics -SourceDirectory $binItem.DirectoryName -TrackNumber $track.Number -Title $track.Title
+            $lyricsStatus = if ($null -ne $lyricsResult) { 'found' } else { 'not_found' }
+            $lyricsDetail = if ($null -ne $lyricsResult) { 'Local lyrics file' } else { $null }
             $lookupArtist = if (-not [string]::IsNullOrWhiteSpace($track.Artist)) { $track.Artist } else { $albumArtist }
-            if ($null -eq $lyricsResult -and $lyricsOnlineAvailable -and $metadataMatched -and
+
+            if ($null -eq $lyricsResult -and (Test-InstrumentalTitle $track.Title)) {
+                $lyricsResult = [pscustomobject]@{
+                    PlainLyrics  = $null
+                    SyncedLyrics = $null
+                    Instrumental = $true
+                    Source       = 'Instrumental marker in track title'
+                    Id           = $null
+                }
+                $lyricsStatus = 'instrumental'
+                $lyricsDetail = 'Detected from the track title; online lookup skipped'
+            }
+            elseif ($null -eq $lyricsResult -and $metadataMatched -and
                 -not [string]::IsNullOrWhiteSpace($track.Title) -and
                 -not [string]::IsNullOrWhiteSpace($lookupArtist) -and
                 -not [string]::IsNullOrWhiteSpace($albumTitle)) {
                 try {
                     $durationSeconds = [int] [Math]::Round($track.LengthBytes / 176400.0)
-                    $lyricsResult = Resolve-LrcLibLyrics -Title $track.Title -Artist $lookupArtist -Album $albumTitle -DurationSeconds $durationSeconds -CacheRoot $lyricsCacheRoot -Headers $lyricsHeaders
+                    $lyricsResolution = Resolve-LrcLibLyrics -Title $track.Title -Artist $lookupArtist -Album $albumTitle -DurationSeconds $durationSeconds -CacheRoot $lyricsCacheRoot -Headers $lyricsHeaders
+                    $lyricsResult = $lyricsResolution.Lyrics
+                    $lyricsStatus = [string] $lyricsResolution.Status
+                    $lyricsDetail = [string] $lyricsResolution.Detail
                 }
                 catch {
-                    $lyricsOnlineAvailable = $false
-                    Write-Warning "LRCLIB became unavailable; remaining tracks will use local lyrics only. $($_.Exception.Message)"
+                    $lyricsStatus = 'network_error'
+                    $lyricsDetail = $_.Exception.Message
+                    Write-Warning ("Lyrics {0:D2}: LRCLIB network error; continuing with the next track. {1}" -f $track.Number, $lyricsDetail)
                 }
+            }
+            elseif ($null -eq $lyricsResult) {
+                $lyricsStatus = 'metadata_unavailable'
+                $lyricsDetail = 'Album, artist, or track metadata is unavailable'
             }
 
             if ($null -ne $lyricsResult) {
@@ -1144,6 +1289,8 @@ try {
                 }
                 if (-not $isInstrumental -and [string]::IsNullOrWhiteSpace($plainLyrics) -and [string]::IsNullOrWhiteSpace($syncedLyrics)) {
                     $lyricsResult = $null
+                    $lyricsStatus = 'not_found'
+                    $lyricsDetail = 'The matched LRCLIB entry contains no lyrics'
                 }
                 else {
                     $track.PlainLyrics = $plainLyrics
@@ -1152,31 +1299,51 @@ try {
                     $track.LyricsId = Get-ObjectProperty -Object $lyricsResult -Name 'Id'
                     $track.LyricsInstrumental = $isInstrumental
                     if ($isInstrumental) {
-                        $instrumentalTracks++
+                        $lyricsStatus = 'instrumental'
                         Write-Host ('Lyrics {0:D2}: instrumental ({1})' -f $track.Number, $track.LyricsSource)
                     }
                     else {
-                        $lyricsFound++
+                        $lyricsStatus = 'found'
                         $lyricsKind = if (-not [string]::IsNullOrWhiteSpace($syncedLyrics)) { 'synced' } else { 'plain' }
                         Write-Host ('Lyrics {0:D2}: {1} ({2})' -f $track.Number, $lyricsKind, $track.LyricsSource)
                     }
                 }
             }
 
+            if ($null -eq $lyricsResult) {
+                Write-Host ('Lyrics {0:D2}: {1} ({2})' -f $track.Number, $lyricsStatus, $lyricsDetail)
+            }
+            $track.LyricsStatus = $lyricsStatus
+            $track.LyricsDetail = $lyricsDetail
+            if (-not $lyricsStatusCounts.ContainsKey($lyricsStatus)) {
+                $lyricsStatusCounts[$lyricsStatus] = 0
+            }
+            $lyricsStatusCounts[$lyricsStatus] = [int] $lyricsStatusCounts[$lyricsStatus] + 1
+
             $lyricsManifest.Add([pscustomobject]@{
                 number       = $track.Number
                 title        = $track.Title
                 artist       = $track.Artist
-                found        = $null -ne $lyricsResult
+                status       = $lyricsStatus
+                detail       = $lyricsDetail
+                found        = $lyricsStatus -eq 'found'
                 synced       = -not [string]::IsNullOrWhiteSpace([string] $track.SyncedLyrics)
                 instrumental = $track.LyricsInstrumental
                 source       = $track.LyricsSource
                 lrclib_id    = $track.LyricsId
             })
         }
-        Write-Host "Lyrics:      $lyricsFound found, $instrumentalTracks instrumental, $($tracks.Count - $lyricsFound - $instrumentalTracks) unavailable"
+        Write-Host ("Lyrics:      {0} found, {1} instrumental, {2} not found, {3} low confidence, {4} network errors" -f
+            $lyricsStatusCounts.found,
+            $lyricsStatusCounts.instrumental,
+            $lyricsStatusCounts.not_found,
+            $lyricsStatusCounts.low_confidence,
+            $lyricsStatusCounts.network_error)
+        if ($lyricsStatusCounts.metadata_unavailable -gt 0) {
+            Write-Host "Lyrics metadata unavailable: $($lyricsStatusCounts.metadata_unavailable)"
+        }
         $lyricsJson = [ordered]@{
-            provider = 'LRCLIB with local-file priority'
+            provider = 'LRCLIB v2 with local-file and title-instrumental priority'
             tracks   = @($lyricsManifest)
         } | ConvertTo-Json -Depth 5
         [IO.File]::WriteAllText((Join-Path $workDirectory 'lyrics-metadata.json'), $lyricsJson, [Text.UTF8Encoding]::new($false))
@@ -1212,6 +1379,8 @@ try {
                     lyrics_source = $_.LyricsSource
                     lyrics_id     = $_.LyricsId
                     lyrics_synced = -not [string]::IsNullOrWhiteSpace([string] $_.SyncedLyrics)
+                    lyrics_status = $_.LyricsStatus
+                    lyrics_detail = $_.LyricsDetail
                     instrumental  = $_.LyricsInstrumental
                 }
             })
@@ -1357,7 +1526,7 @@ try {
             'LYRICS'                  = $track.PlainLyrics
             'SYNCEDLYRICS'            = $track.SyncedLyrics
             'LYRICS_SOURCE'           = $track.LyricsSource
-            'LYRICS_STATUS'           = if ($track.LyricsInstrumental) { 'instrumental' } else { $null }
+            'LYRICS_STATUS'           = $track.LyricsStatus
         }
         foreach ($tagName in $tagValues.Keys) {
             $tagValue = $tagValues[$tagName]
