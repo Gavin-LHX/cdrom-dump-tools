@@ -1,0 +1,271 @@
+# CD-ROM Dump Tools
+
+一套用于完整读取 CD、保存 BIN/TOC 镜像，以及将 CD-DA 音轨转换为 FLAC/WAV 的脚本。
+
+项目同时提供 Linux 服务器端的光盘镜像脚本和 Windows 本地增强转换脚本。Windows 版本能够自动查询专辑与曲目信息、重命名文件、写入封面和标签，并获取同步歌词。
+
+## 文件说明
+
+| 文件 | 平台 | 用途 |
+| --- | --- | --- |
+| `dump_cdrom.sh` | Linux | 从实体光驱读取完整 CD，生成 BIN/TOC、校验和及读取信息 |
+| `bin_to_audio.sh` | Linux | 将纯 CD-DA 的 BIN/TOC 拆分为基础 FLAC/WAV 音轨 |
+| `bin_to_audio_windows.ps1` | Windows | 增强转换器：拆轨、元数据、年份/流派比对、封面、歌词和自动命名 |
+| `bin_to_audio_windows.cmd` | Windows | 拖放式启动器，默认调用 PowerShell 脚本转换为 FLAC |
+
+## 功能概览
+
+### Linux 光盘镜像
+
+- 使用 `cdrdao read-cd --read-raw` 保存原始扇区和 TOC。
+- 音频读取使用 `--paranoia-mode 3`。
+- 支持纯音频、数据和混合模式 CD 的 BIN/TOC 归档。
+- 生成 `SHA256SUMS`、`disc-info.txt` 和 `dump-metadata.txt`。
+- 根据 MusicBrainz Disc ID 查询专辑信息。
+- 默认目录名：`艺术家 - 专辑 (年份) [BIN-TOC]`。
+- 元数据回退：30 天缓存 → MusicBrainz 主站 → MusicBrainz 镜像 → 过期缓存 → 时间戳目录。
+- 查询失败不会导致光盘读取失败。
+- 同名目录自动追加 `-2`、`-3`，不会覆盖已有归档。
+- 在临时目录中读取，全部成功后才原子移动为最终目录。
+
+### Windows 增强转换
+
+- 解析 `cdrdao` TOC，按字节边界拆分 CD-DA 音轨。
+- 使用 FFmpeg 输出无损 FLAC 或 WAV。
+- 自动计算 MusicBrainz Disc ID 并匹配正确发行版本。
+- 自动写入曲名、歌手、专辑、年份、日期、流派、ISRC、条码和 MusicBrainz ID。
+- 使用 MusicBrainz、Apple iTunes Search 和 Wikidata 比对年份及流派。
+- 从 Cover Art Archive 获取封面，生成 `cover.jpg`、`folder.jpg`，并嵌入 FLAC。
+- 自动命名为 `01 - 歌曲名.flac`。
+- 默认目录名：`艺术家 - 专辑 (年份) [FLAC/WAV]`。
+- 本地 `.lrc/.txt` 歌词优先；没有时使用 LRCLIB 精确匹配和高置信度搜索。
+- 同步歌词保存为同名 `.lrc`，纯文本歌词保存为 `.txt`。
+- FLAC 写入 `LYRICS`、`SYNCEDLYRICS`、`LYRICS_SOURCE` 标签。
+- 纯音乐会标记为 `instrumental`，不会写入伪歌词。
+- 输出 `musicbrainz-metadata.json`、`lyrics-metadata.json`、播放列表和 SHA-256 校验和。
+- 在线服务不可用时使用 30 天缓存或降级转换，不中断音频处理。
+
+## Linux：安装与读取 CD
+
+### 依赖
+
+Debian/Ubuntu：
+
+```bash
+sudo apt update
+sudo apt install cdrdao curl python3 coreutils util-linux
+```
+
+### 安装
+
+```bash
+sudo install -o root -g root -m 0755 dump_cdrom.sh /dump_cdrom.sh
+```
+
+默认光驱是 `/dev/cdrom`，默认输出根目录是 `/mnt/hdd2/cdrom-dumps`。均可通过参数或环境变量修改。
+
+### 使用
+
+```bash
+sudo /dump_cdrom.sh
+```
+
+建议为状态不佳的光盘降低读取速度：
+
+```bash
+sudo /dump_cdrom.sh --speed 4
+sudo /dump_cdrom.sh --speed 2
+```
+
+其他示例：
+
+```bash
+# 指定光驱和输出目录
+sudo /dump_cdrom.sh --device /dev/sr0 --output-dir /data/cd-images
+
+# 手动指定目录/镜像名称；手动名称优先于在线专辑名称
+sudo /dump_cdrom.sh --name my-disc
+
+# 禁用在线元数据查询
+sudo /dump_cdrom.sh --no-metadata
+
+# 成功后弹出光盘
+sudo /dump_cdrom.sh --eject
+
+# 只检查参数和光驱状态
+sudo /dump_cdrom.sh --dry-run
+```
+
+也可以使用环境变量：
+
+```bash
+export CDROM_DEVICE=/dev/sr0
+export CDROM_DUMP_DIR=/data/cd-images
+export CDROM_NO_METADATA=1
+```
+
+## Linux：将 BIN/TOC 转换为音轨
+
+### 依赖
+
+```bash
+sudo apt install sox flac coreutils
+```
+
+### 使用
+
+```bash
+chmod +x bin_to_audio.sh
+
+# 默认转换为 FLAC，并自动寻找同名 TOC
+./bin_to_audio.sh /path/to/disc.bin
+
+# 转换为 WAV
+./bin_to_audio.sh --format wav /path/to/disc.bin
+
+# 明确指定 TOC 和输出目录
+./bin_to_audio.sh \
+  --toc /path/to/disc.toc \
+  --output-dir /path/to/output \
+  /path/to/disc.bin
+
+# 只解析和检查，不生成文件
+./bin_to_audio.sh --dry-run /path/to/disc.bin
+```
+
+Linux 转换器是基础离线版本，只写入轨号和 TOC 中已有的 ISRC。需要自动专辑信息、封面、歌词及曲名重命名时，使用 Windows 增强版本。
+
+## Windows：增强转换
+
+### 依赖
+
+- Windows PowerShell 5.1 或 PowerShell 7
+- [FFmpeg](https://ffmpeg.org/)
+- BIN 文件和匹配的 `cdrdao` TOC 文件
+- 元数据、封面和歌词功能需要网络连接
+
+脚本会优先使用 `PATH` 中的 `ffmpeg.exe`，也可通过 `-FfmpegPath` 明确指定。
+
+### 拖放使用
+
+将 `.bin` 文件拖到 `bin_to_audio_windows.cmd` 上，脚本会查找同目录同名 `.toc`，默认输出 FLAC。
+
+### PowerShell 使用
+
+```powershell
+# 默认 FLAC
+.\bin_to_audio_windows.ps1 -BinPath 'D:\CD\disc.bin'
+
+# WAV
+.\bin_to_audio_windows.ps1 -BinPath 'D:\CD\disc.bin' -Format wav
+
+# 指定 TOC、输出目录和 FFmpeg
+.\bin_to_audio_windows.ps1 `
+  -BinPath 'D:\CD\disc.bin' `
+  -TocPath 'D:\CD\disc.toc' `
+  -OutputDirectory 'D:\Music\My Album' `
+  -FfmpegPath 'D:\Apps\FFmpeg\bin\ffmpeg.exe'
+```
+
+可选开关：
+
+```powershell
+# 不查询在线元数据
+-NoMetadata
+
+# 不下载或嵌入封面
+-NoCover
+
+# 不查询、保存或嵌入歌词
+-NoLyrics
+
+# MusicBrainz 返回多个发行版本时选择指定序号
+-ReleaseIndex 2
+```
+
+## 本地歌词命名
+
+Windows 转换器会先在 BIN 所在目录和 `lyrics` 子目录中查找歌词。以下名称均可识别：
+
+```text
+01 - 歌曲名.lrc
+歌曲名.lrc
+track-01.lrc
+01.lrc
+```
+
+纯文本歌词可使用相同名称和 `.txt` 后缀。本地歌词优先级高于 LRCLIB。
+
+## 关于 Q 子通道 CRC 提示
+
+`cdrdao` 有时会显示：
+
+```text
+Found 92 Q sub-channels with CRC errors.
+```
+
+该提示表示部分 Q 子通道帧的 CRC 未通过。Q 子通道主要保存轨道号、时间、INDEX、pregap 和 ISRC 等控制信息，不等同于音频 PCM 扇区损坏。只要读取最终成功，并且没有同时出现 `read error`、`SCSI error`、`uncorrectable`、`Padding with ... zero sectors` 或 `L-EC errors`，少量 Q CRC 通常不致命。
+
+如需提高可信度：
+
+1. 清洁光盘并使用 `--speed 4` 或 `--speed 2` 重新读取。
+2. 对同一张盘读取两次，比较 BIN 的 SHA-256。
+3. 如果哈希不同或能听到爆音、跳音，换另一台光驱读取。
+4. 不要仅为了隐藏提示使用 `--fast-toc`，否则可能失去详细的 INDEX/pregap 检测。
+
+## 输出与完整性
+
+镜像目录示例：
+
+```text
+艺术家 - 专辑 (2026) [BIN-TOC]/
+├── cdrom-YYYYMMDD-HHMMSS.bin
+├── cdrom-YYYYMMDD-HHMMSS.toc
+├── disc-info.txt
+├── dump-metadata.txt
+├── musicbrainz-metadata.json
+└── SHA256SUMS
+```
+
+增强转换目录示例：
+
+```text
+艺术家 - 专辑 (2026) [FLAC]/
+├── 01 - 歌曲名.flac
+├── 01 - 歌曲名.lrc
+├── cover.jpg
+├── folder.jpg
+├── tracks.m3u8
+├── musicbrainz-metadata.json
+├── lyrics-metadata.json
+└── SHA256SUMS.txt
+```
+
+校验镜像：
+
+```bash
+cd '/path/to/album [BIN-TOC]'
+sha256sum --check SHA256SUMS
+```
+
+## 限制与注意事项
+
+- 两个音轨转换器仅支持纯 CD-DA TOC；遇到数据轨或混合模式 TOC 会拒绝转换。
+- `dump_cdrom.sh` 可以归档混合模式 CD，但后续应使用理解对应数据轨格式的工具处理。
+- WAV 对封面和自定义歌词标签的播放器兼容性有限，因此脚本始终保留同名歌词旁挂文件。
+- 不同发行版、再版和地区版可能共享相似曲目表。出现多个 MusicBrainz 匹配时请确认发行日期、国家和介质序号。
+- 在线查询会向元数据服务发送 Disc ID、专辑/歌曲名称和时长，不会上传音频内容。
+- 请仅归档和转换你有权处理的光盘与歌词。
+
+## 使用的在线服务
+
+- [MusicBrainz](https://musicbrainz.org/)：Disc ID、发行版和曲目信息
+- [Cover Art Archive](https://coverartarchive.org/)：封面
+- [Apple iTunes Search API](https://performance-partners.apple.com/search-api)：年份和流派交叉验证
+- [Wikidata](https://www.wikidata.org/)：发行日期和流派交叉验证
+- [LRCLIB](https://lrclib.net/)：同步及纯文本歌词
+- [musicbrainz.eu](https://musicbrainz.eu/)：MusicBrainz 查询镜像
+
+## 安全说明
+
+仓库不包含服务器地址、账号、密码、API Token、光盘镜像、缓存或用户媒体文件。运行前请检查输出目录权限，并妥善保存生成的 BIN 文件。

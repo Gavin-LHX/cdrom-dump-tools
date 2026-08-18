@@ -1,0 +1,13 @@
+*.bin
+*.iso
+*.flac
+*.wav
+*.lrc
+*.partial.*
+.metadata-cache/
+cover.jpg
+folder.jpg
+musicbrainz-metadata.json
+lyrics-metadata.json
+SHA256SUMS
+SHA256SUMS.txt
