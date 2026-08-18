@@ -21,7 +21,7 @@ param(
     [ValidateRange(0, 1000)]
     [int] $ReleaseIndex = 0,
 
-    [string] $MusicBrainzUserAgent = 'BinToAudioWindows/2.3.2 (https://github.com/Gavin-LHX/cdrom-dump-tools)'
+    [string] $MusicBrainzUserAgent = 'BinToAudioWindows/2.3.3 (https://github.com/Gavin-LHX/cdrom-dump-tools)'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -825,6 +825,135 @@ function Convert-LrcToPlainText {
         return $null
     }
     return (@($plainLines) -join [Environment]::NewLine)
+}
+
+function Format-SrtTimestamp {
+    param([Parameter(Mandatory = $true)][int64] $Milliseconds)
+
+    $Milliseconds = [Math]::Max(0, $Milliseconds)
+    [int64] $hours = [Math]::Floor($Milliseconds / 3600000.0)
+    [int] $minutes = [Math]::Floor(($Milliseconds % 3600000) / 60000.0)
+    [int] $seconds = [Math]::Floor(($Milliseconds % 60000) / 1000.0)
+    [int] $remainder = $Milliseconds % 1000
+    return '{0:D2}:{1:D2}:{2:D2},{3:D3}' -f $hours, $minutes, $seconds, $remainder
+}
+
+function Convert-LrcToSrt {
+    param(
+        [Parameter(Mandatory = $true)][string] $SyncedLyrics,
+        [int64] $TrackDurationMilliseconds = 0,
+        [ValidateRange(1000, 60000)][int] $MaximumCueDurationMilliseconds = 10000
+    )
+
+    if ([string]::IsNullOrWhiteSpace($SyncedLyrics)) {
+        return $null
+    }
+
+    [int64] $offsetMilliseconds = 0
+    foreach ($line in ($SyncedLyrics -split '\r?\n')) {
+        if ($line -match '^\[offset\s*:\s*([+-]?\d+)\]\s*$') {
+            $offsetMilliseconds = [int64] $Matches[1]
+        }
+    }
+
+    $timestampPattern = '\[(?<minutes>\d{1,3}):(?<seconds>\d{2})(?:[.:](?<fraction>\d{1,3}))?\]'
+    $inlineTimestampPattern = '<\d{1,3}:\d{2}(?:[.:]\d{1,3})?>'
+    $entries = [System.Collections.Generic.List[object]]::new()
+    [int] $sequence = 0
+
+    foreach ($line in ($SyncedLyrics -split '\r?\n')) {
+        $timestampMatches = [regex]::Matches($line, $timestampPattern)
+        if ($timestampMatches.Count -eq 0) {
+            continue
+        }
+
+        $text = [regex]::Replace($line, $timestampPattern, '')
+        $text = [regex]::Replace($text, $inlineTimestampPattern, '').Trim()
+        foreach ($timestampMatch in $timestampMatches) {
+            [int] $minutes = [int] $timestampMatch.Groups['minutes'].Value
+            [int] $seconds = [int] $timestampMatch.Groups['seconds'].Value
+            if ($seconds -ge 60) {
+                continue
+            }
+
+            $fractionText = $timestampMatch.Groups['fraction'].Value
+            [int] $fractionMilliseconds = 0
+            if (-not [string]::IsNullOrWhiteSpace($fractionText)) {
+                switch ($fractionText.Length) {
+                    1 { $fractionMilliseconds = [int] $fractionText * 100 }
+                    2 { $fractionMilliseconds = [int] $fractionText * 10 }
+                    default { $fractionMilliseconds = [int] $fractionText }
+                }
+            }
+
+            [int64] $startMilliseconds = (($minutes * 60L) + $seconds) * 1000L + $fractionMilliseconds + $offsetMilliseconds
+            $startMilliseconds = [Math]::Max(0, $startMilliseconds)
+            $entries.Add([pscustomobject]@{
+                StartMilliseconds = $startMilliseconds
+                Text              = $text
+                Sequence          = $sequence
+            })
+            $sequence++
+        }
+    }
+
+    if ($entries.Count -eq 0) {
+        return $null
+    }
+
+    $timeline = [System.Collections.Generic.List[object]]::new()
+    $timestampGroups = @($entries | Group-Object StartMilliseconds | Sort-Object { [int64] $_.Name })
+    foreach ($timestampGroup in $timestampGroups) {
+        $texts = @($timestampGroup.Group |
+            Sort-Object Sequence |
+            ForEach-Object { [string] $_.Text } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Select-Object -Unique)
+        $timeline.Add([pscustomobject]@{
+            StartMilliseconds = [int64] $timestampGroup.Name
+            Text              = $texts -join [Environment]::NewLine
+        })
+    }
+
+    $srtLines = [System.Collections.Generic.List[string]]::new()
+    [int] $cueNumber = 0
+    for ($index = 0; $index -lt $timeline.Count; $index++) {
+        $entry = $timeline[$index]
+        if ([string]::IsNullOrWhiteSpace([string] $entry.Text)) {
+            continue
+        }
+
+        [int64] $startMilliseconds = $entry.StartMilliseconds
+        [int64] $endMilliseconds = $startMilliseconds + $MaximumCueDurationMilliseconds
+        if (($index + 1) -lt $timeline.Count) {
+            $nextStart = [int64] $timeline[$index + 1].StartMilliseconds
+            if ($nextStart -gt $startMilliseconds) {
+                $endMilliseconds = [Math]::Min($endMilliseconds, $nextStart - 10)
+            }
+        }
+        elseif ($TrackDurationMilliseconds -gt $startMilliseconds) {
+            $endMilliseconds = [Math]::Min($endMilliseconds, $TrackDurationMilliseconds)
+        }
+        if ($TrackDurationMilliseconds -gt 0) {
+            $endMilliseconds = [Math]::Min($endMilliseconds, $TrackDurationMilliseconds)
+        }
+        if ($endMilliseconds -le $startMilliseconds) {
+            $endMilliseconds = $startMilliseconds + 1
+        }
+
+        $cueNumber++
+        $srtLines.Add([string] $cueNumber)
+        $srtLines.Add("$(Format-SrtTimestamp $startMilliseconds) --> $(Format-SrtTimestamp $endMilliseconds)")
+        foreach ($textLine in ([string] $entry.Text -split '\r?\n')) {
+            $srtLines.Add($textLine)
+        }
+        $srtLines.Add('')
+    }
+
+    if ($cueNumber -eq 0) {
+        return $null
+    }
+    return $srtLines -join "`r`n"
 }
 
 function Get-LocalLyrics {
@@ -1690,7 +1819,7 @@ try {
     if (-not $NoLyrics) {
         $lyricsCacheRoot = Join-Path $cacheRoot 'Lyrics\LRCLIB-v2'
         $lyricsHeaders = @{
-            'User-Agent' = 'BinToAudioWindows/2.3.2 (https://github.com/Gavin-LHX/cdrom-dump-tools)'
+            'User-Agent' = 'BinToAudioWindows/2.3.3 (https://github.com/Gavin-LHX/cdrom-dump-tools)'
             'Accept'     = 'application/json'
         }
         $lyricsStatusCounts = @{
@@ -2057,6 +2186,8 @@ try {
 
     $createdFiles = [System.Collections.Generic.List[string]]::new()
     $createdLyricsFiles = [System.Collections.Generic.List[string]]::new()
+    $createdSubtitleFiles = [System.Collections.Generic.List[string]]::new()
+    $subtitlesDirectory = Join-Path $workDirectory 'Subtitles'
 
     foreach ($track in $tracks) {
         $safeTitle = ConvertTo-SafeFileName $track.Title
@@ -2074,6 +2205,17 @@ try {
             $lyricsPath = Join-Path $workDirectory ($lyricsBaseName + '.lrc')
             [IO.File]::WriteAllText($lyricsPath, ([string] $track.SyncedLyrics).Trim() + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
             $createdLyricsFiles.Add($lyricsPath)
+
+            [int64] $trackDurationMilliseconds = [Math]::Floor(([double] $track.LengthBytes * 1000.0) / (4.0 * 44100.0))
+            $subtitleText = Convert-LrcToSrt -SyncedLyrics ([string] $track.SyncedLyrics) -TrackDurationMilliseconds $trackDurationMilliseconds
+            if (-not [string]::IsNullOrWhiteSpace($subtitleText)) {
+                if (-not (Test-Path -LiteralPath $subtitlesDirectory)) {
+                    $null = New-Item -ItemType Directory -Path $subtitlesDirectory
+                }
+                $subtitlePath = Join-Path $subtitlesDirectory ($lyricsBaseName + '.srt')
+                [IO.File]::WriteAllText($subtitlePath, $subtitleText.TrimEnd() + "`r`n", [Text.UTF8Encoding]::new($true))
+                $createdSubtitleFiles.Add($subtitlePath)
+            }
         }
         elseif (-not [string]::IsNullOrWhiteSpace([string] $track.PlainLyrics)) {
             $lyricsPath = Join-Path $workDirectory ($lyricsBaseName + '.txt')
@@ -2162,9 +2304,10 @@ try {
     $playlistLines = @('#EXTM3U') + ($createdFiles | ForEach-Object { [IO.Path]::GetFileName($_) })
     [IO.File]::WriteAllLines((Join-Path $workDirectory 'tracks.m3u8'), $playlistLines, [Text.UTF8Encoding]::new($false))
 
-    $checksumLines = foreach ($file in @($createdFiles) + @($createdLyricsFiles)) {
+    $checksumLines = foreach ($file in @($createdFiles) + @($createdLyricsFiles) + @($createdSubtitleFiles)) {
         $hash = Get-FileHash -LiteralPath $file -Algorithm SHA256
-        '{0} *{1}' -f $hash.Hash.ToLowerInvariant(), [IO.Path]::GetFileName($file)
+        $relativeName = $file.Substring($workDirectory.Length).TrimStart([char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)).Replace('\', '/')
+        '{0} *{1}' -f $hash.Hash.ToLowerInvariant(), $relativeName
     }
     [IO.File]::WriteAllLines((Join-Path $workDirectory 'SHA256SUMS.txt'), $checksumLines, [Text.UTF8Encoding]::new($false))
 

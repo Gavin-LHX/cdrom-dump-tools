@@ -51,6 +51,7 @@
 - 根据 `Instrumental`、`Off Vocal`、`Karaoke` 等标题标记识别纯音乐，不再计入歌词缺失。
 - 歌词结果区分 `found`、`instrumental`、`not_found`、`low_confidence` 和 `network_error`。
 - 同步歌词保存为同名 `.lrc`，纯文本歌词保存为 `.txt`。
+- 同步 `.lrc` 会同时转换为 UTF-8 SRT，集中保存到输出目录的 `Subtitles/` 文件夹；文件名与音频一致，可供 VLC 等播放器加载。
 - FLAC 写入 `LYRICS`、`SYNCEDLYRICS`、`LYRICS_SOURCE` 标签。
 - 纯音乐会标记为 `instrumental`，不会写入伪歌词。
 - 输出 `musicbrainz-metadata.json`、`lyrics-metadata.json`、播放列表和 SHA-256 校验和。
@@ -278,6 +279,8 @@ verification-pass-2/
 艺术家 - 专辑 (2026) [FLAC]/
 ├── 01 - 歌曲名.flac
 ├── 01 - 歌曲名.lrc
+├── Subtitles/
+│   └── 01 - 歌曲名.srt
 ├── cover.jpg
 ├── folder.jpg
 ├── tracks.m3u8
@@ -298,6 +301,7 @@ sha256sum --check SHA256SUMS
 - 两个音轨转换器仅支持纯 CD-DA TOC；遇到数据轨或混合模式 TOC 会拒绝转换。
 - `dump_cdrom.sh` 可以归档混合模式 CD，但后续应使用理解对应数据轨格式的工具处理。
 - WAV 对封面和自定义歌词标签的播放器兼容性有限，因此脚本始终保留同名歌词旁挂文件。
+- 只有带时间戳的 `.lrc` 能准确转换为 SRT；纯文本 `.txt` 没有时间信息，因此仍只作为歌词旁挂文件保留。
 - 不同发行版、再版和地区版可能共享相似曲目表。出现多个 MusicBrainz 匹配时请确认发行日期、国家和介质序号。
 - 在线查询会向元数据服务发送 Disc ID、专辑/歌曲名称和时长，不会上传音频内容。
 - 请仅归档和转换你有权处理的光盘与歌词。
