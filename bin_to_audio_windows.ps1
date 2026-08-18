@@ -21,7 +21,7 @@ param(
     [ValidateRange(0, 1000)]
     [int] $ReleaseIndex = 0,
 
-    [string] $MusicBrainzUserAgent = 'BinToAudioWindows/2.3.1 (https://github.com/Gavin-LHX/cdrom-dump-tools)'
+    [string] $MusicBrainzUserAgent = 'BinToAudioWindows/2.3.2 (https://github.com/Gavin-LHX/cdrom-dump-tools)'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -1057,6 +1057,97 @@ function Get-YearFromDate {
     return $null
 }
 
+function ConvertTo-EnglishGenreName {
+    param([object] $Genre)
+
+    if ($null -eq $Genre -or [string]::IsNullOrWhiteSpace([string] $Genre)) {
+        return $null
+    }
+
+    $genreText = ([string] $Genre).Trim()
+    $genreKey = Normalize-MatchText $genreText
+    $englishNames = @{
+        'ambient'           = 'Ambient'
+        'ambientmusic'      = 'Ambient'
+        'anime'             = 'Anime'
+        'classical'         = 'Classical'
+        'classicalmusic'    = 'Classical'
+        'drumandbass'       = 'Drum and Bass'
+        'drumnbass'         = 'Drum and Bass'
+        'dubstep'           = 'Dubstep'
+        'electronic'        = 'Electronic'
+        'electronicmusic'   = 'Electronic'
+        'electronica'       = 'Electronica'
+        'gabber'            = 'Gabber'
+        'hardcore'          = 'Hardcore'
+        'hardcoretechno'    = 'Hardcore Techno'
+        'heavymetal'        = 'Heavy Metal'
+        'hiphop'            = 'Hip Hop'
+        'hiphopmusic'       = 'Hip Hop'
+        'hiphoprap'         = 'Hip Hop'
+        'house'             = 'House'
+        'housemusic'        = 'House'
+        'indierock'         = 'Indie Rock'
+        'industrial'        = 'Industrial'
+        'industrialmusic'   = 'Industrial'
+        'jazz'              = 'Jazz'
+        'jpop'              = 'J-Pop'
+        'metal'             = 'Metal'
+        'pop'               = 'Pop'
+        'popmusic'          = 'Pop'
+        'poprock'           = 'Pop Rock'
+        'punk'              = 'Punk'
+        'punkrock'          = 'Punk Rock'
+        'rap'               = 'Rap'
+        'rhythmandblues'    = 'R&B'
+        'rnb'               = 'R&B'
+        'rock'              = 'Rock'
+        'rockmusic'         = 'Rock'
+        'soundtrack'        = 'Soundtrack'
+        'speedcore'         = 'Speedcore'
+        'techno'            = 'Techno'
+        'technomusic'       = 'Techno'
+        'trance'            = 'Trance'
+        'trancemusic'       = 'Trance'
+        'videogamemusic'    = 'Video Game Music'
+    }
+
+    $localizedAliases = @(
+        @('\u30C6\u30AF\u30CE', 'Techno'),
+        @('\u30A8\u30EC\u30AF\u30C8\u30ED\u30CB\u30C3\u30AF', 'Electronic'),
+        @('\u30A8\u30EC\u30AF\u30C8\u30ED\u30CB\u30AB', 'Electronica'),
+        @('\u30CF\u30FC\u30C9\u30B3\u30A2\u30C6\u30AF\u30CE', 'Hardcore Techno'),
+        @('\u30CF\u30FC\u30C9\u30B3\u30A2', 'Hardcore'),
+        @('\u30B9\u30D4\u30FC\u30C9\u30B3\u30A2', 'Speedcore'),
+        @('\u30AC\u30D0', 'Gabber'),
+        @('\u30C8\u30E9\u30F3\u30B9', 'Trance'),
+        @('\u30CF\u30A6\u30B9', 'House'),
+        @('\u30C9\u30E9\u30E0\u30F3\u30D9\u30FC\u30B9', 'Drum and Bass'),
+        @('\u30C0\u30D6\u30B9\u30C6\u30C3\u30D7', 'Dubstep'),
+        @('\u30ED\u30C3\u30AF', 'Rock'),
+        @('\u30DD\u30C3\u30D7', 'Pop'),
+        @('\u30B8\u30E3\u30BA', 'Jazz'),
+        @('\u30D2\u30C3\u30D7\u30DB\u30C3\u30D7', 'Hip Hop'),
+        @('\u30AF\u30E9\u30B7\u30C3\u30AF', 'Classical'),
+        @('\u30A2\u30F3\u30D3\u30A8\u30F3\u30C8', 'Ambient'),
+        @('\u30A4\u30F3\u30C0\u30B9\u30C8\u30EA\u30A2\u30EB', 'Industrial'),
+        @('\u30D1\u30F3\u30AF', 'Punk'),
+        @('\u30E1\u30BF\u30EB', 'Metal'),
+        @('\u30B5\u30A6\u30F3\u30C9\u30C8\u30E9\u30C3\u30AF', 'Soundtrack'),
+        @('\u30B2\u30FC\u30E0\u97F3\u697D', 'Video Game Music'),
+        @('\u30A2\u30CB\u30E1', 'Anime')
+    )
+    foreach ($alias in $localizedAliases) {
+        $localizedKey = Normalize-MatchText ([regex]::Unescape([string] $alias[0]))
+        $englishNames[$localizedKey] = [string] $alias[1]
+    }
+
+    if ($englishNames.ContainsKey($genreKey)) {
+        return [string] $englishNames[$genreKey]
+    }
+    return $genreText
+}
+
 function Resolve-MetadataEvidence {
     param(
         [Parameter(Mandatory = $true)]
@@ -1081,18 +1172,14 @@ function Resolve-MetadataEvidence {
             if ([string]::IsNullOrWhiteSpace([string] $genre)) {
                 continue
             }
-            $genreKey = Normalize-MatchText ([string] $genre)
-            switch ($genreKey) {
-                'electronicmusic' { $genreKey = 'electronic' }
-                'hiphoprap'       { $genreKey = 'hiphop' }
-                'rhythmandblues'  { $genreKey = 'rnb' }
-            }
+            $genreDisplayName = ConvertTo-EnglishGenreName $genre
+            $genreKey = Normalize-MatchText $genreDisplayName
             if ($genreKey -eq '') {
                 continue
             }
             if (-not $genreScores.ContainsKey($genreKey)) {
                 $genreScores[$genreKey] = 0
-                $genreDisplay[$genreKey] = [string] $genre
+                $genreDisplay[$genreKey] = $genreDisplayName
             }
             $genreScores[$genreKey] += $sourceWeight
         }
@@ -1437,9 +1524,9 @@ try {
                 try {
                     $appleSearchTerm = [Uri]::EscapeDataString("$albumArtist $albumTitle")
                     $appleCountry = if ($releaseCountry -match '^[A-Za-z]{2}$') { $releaseCountry.ToUpperInvariant() } else { 'US' }
-                    $appleLanguage = if ($appleCountry -eq 'JP') { 'ja_jp' } else { 'en_us' }
+                    $appleLanguage = 'en_us'
                     $appleUri = "https://itunes.apple.com/search?term=$appleSearchTerm&media=music&entity=album&limit=25&country=$appleCountry&lang=$appleLanguage"
-                    $appleCachePath = Join-Path $cacheRoot "Apple-v2\$releaseId-$appleCountry.json"
+                    $appleCachePath = Join-Path $cacheRoot "Apple-v3\$releaseId-$appleCountry-$appleLanguage.json"
                     $appleData = Invoke-JsonRequestWithRetry -Uri $appleUri -Headers $headers -CachePath $appleCachePath -MaximumAttempts 5 -SourceName 'Apple iTunes Search' -MinimumIntervalMilliseconds 3100 -ThrottleKey 'apple-search-api'
 
                     $appleResultIndex = 0
@@ -1603,7 +1690,7 @@ try {
     if (-not $NoLyrics) {
         $lyricsCacheRoot = Join-Path $cacheRoot 'Lyrics\LRCLIB-v2'
         $lyricsHeaders = @{
-            'User-Agent' = 'BinToAudioWindows/2.3.1 (https://github.com/Gavin-LHX/cdrom-dump-tools)'
+            'User-Agent' = 'BinToAudioWindows/2.3.2 (https://github.com/Gavin-LHX/cdrom-dump-tools)'
             'Accept'     = 'application/json'
         }
         $lyricsStatusCounts = @{
