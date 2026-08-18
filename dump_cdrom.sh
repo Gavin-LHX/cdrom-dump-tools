@@ -8,6 +8,10 @@ OUTPUT_DIR="${CDROM_DUMP_DIR:-/mnt/hdd2/cdrom-dumps}"
 IMAGE_NAME=""
 CUSTOM_NAME=0
 READ_SPEED=""
+VERIFY_PASSES="${CDROM_VERIFY_PASSES:-1}"
+VERIFY_SPEED="${CDROM_VERIFY_SPEED:-4}"
+VERIFY_MISMATCH=0
+VERIFY_RESULT="SINGLE_PASS"
 EJECT_AFTER=0
 DRY_RUN=0
 METADATA_LOOKUP=1
@@ -29,22 +33,29 @@ Options:
   -o, --output-dir DIR      Destination root (default: $OUTPUT_DIR)
   -n, --name NAME           Image/directory name (default: timestamped)
   -s, --speed SPEED         Limit the drive read speed
+      --verify-passes 1|2   Read once, or read twice and compare (default: $VERIFY_PASSES)
+      --verify-speed SPEED  Default speed for verification reads (default: ${VERIFY_SPEED}x)
       --no-metadata         Do not query album metadata or rename the folder
       --eject               Eject the disc after a successful dump
       --dry-run             Validate and show what would be done
   -h, --help                Show this help
 
 Environment variables:
-  CDROM_DEVICE, CDROM_DUMP_DIR, CDROM_NO_METADATA
+  CDROM_DEVICE, CDROM_DUMP_DIR, CDROM_NO_METADATA,
+  CDROM_VERIFY_PASSES, CDROM_VERIFY_SPEED
 
 Example:
-  $PROGRAM --name album-01
+  $PROGRAM --verify-passes 2
 EOF
 }
 
 die() {
   printf 'Error: %s\n' "$*" >&2
   exit 1
+}
+
+warn() {
+  printf 'Warning: %s\n' "$*" >&2
 }
 
 need_value() {
@@ -74,6 +85,16 @@ while (($#)); do
       READ_SPEED="$2"
       shift 2
       ;;
+    --verify-passes)
+      need_value "$@"
+      VERIFY_PASSES="$2"
+      shift 2
+      ;;
+    --verify-speed)
+      need_value "$@"
+      VERIFY_SPEED="$2"
+      shift 2
+      ;;
     --eject)
       EJECT_AFTER=1
       shift
@@ -96,7 +117,7 @@ while (($#)); do
   esac
 done
 
-for command_name in cdrdao sha256sum lsblk df mktemp realpath; do
+for command_name in cdrdao sha256sum lsblk df mktemp realpath awk blockdev tee; do
   command -v "$command_name" >/dev/null 2>&1 ||
     die "required command not found: $command_name"
 done
@@ -121,6 +142,20 @@ fi
 [[ "$IMAGE_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] ||
   die "name may contain only letters, numbers, dot, underscore, and hyphen"
 [[ "$READ_SPEED" =~ ^$|^[1-9][0-9]*$ ]] || die "speed must be a positive integer"
+[[ "$VERIFY_PASSES" =~ ^[12]$ ]] || die "verify passes must be 1 or 2"
+[[ "$VERIFY_SPEED" =~ ^[1-9][0-9]*$ ]] || die "verify speed must be a positive integer"
+
+FIRST_PASS_SPEED="$READ_SPEED"
+SECOND_PASS_SPEED=""
+if ((VERIFY_PASSES == 2)); then
+  if [[ -z "$FIRST_PASS_SPEED" ]]; then
+    FIRST_PASS_SPEED="$VERIFY_SPEED"
+  fi
+  SECOND_PASS_SPEED="$VERIFY_SPEED"
+  if [[ -n "$READ_SPEED" ]] && ((10#$READ_SPEED < 10#$VERIFY_SPEED)); then
+    SECOND_PASS_SPEED="$READ_SPEED"
+  fi
+fi
 
 if ((DRY_RUN)); then
   printf 'Device:      %s\n' "$DEVICE"
@@ -129,7 +164,14 @@ if ((DRY_RUN)); then
     printf 'Folder name: album metadata when available; timestamp fallback\n'
   fi
   printf 'Format:      BIN/TOC (raw sectors, paranoia mode 3)\n'
-  [[ -z "$READ_SPEED" ]] || printf 'Read speed:  %sx\n' "$READ_SPEED"
+  if ((VERIFY_PASSES == 2)); then
+    printf 'Verification: 2 independent reads; compare BIN and TOC SHA-256\n'
+    printf 'Pass 1 speed: %sx\n' "$FIRST_PASS_SPEED"
+    printf 'Pass 2 speed: %sx\n' "$SECOND_PASS_SPEED"
+  else
+    printf 'Verification: single read\n'
+    [[ -z "$FIRST_PASS_SPEED" ]] || printf 'Read speed:   %sx\n' "$FIRST_PASS_SPEED"
+  fi
   exit 0
 fi
 
@@ -145,8 +187,12 @@ fi
 
 disc_bytes="$(blockdev --getsize64 "$DEVICE" 2>/dev/null || printf '0')"
 available_bytes="$(df --output=avail -B1 "$OUTPUT_DIR" | awk 'NR == 2 { print $1 }')"
+required_bytes=0
+if [[ "$disc_bytes" =~ ^[0-9]+$ ]] && ((disc_bytes > 0)); then
+  required_bytes=$((disc_bytes * VERIFY_PASSES + 67108864))
+fi
 if [[ "$disc_bytes" =~ ^[0-9]+$ && "$available_bytes" =~ ^[0-9]+$ ]] &&
-   ((disc_bytes > 0 && available_bytes < disc_bytes + 67108864)); then
+   ((required_bytes > 0 && available_bytes < required_bytes)); then
   die "not enough free space in $OUTPUT_DIR"
 fi
 
@@ -165,38 +211,122 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-printf 'Reading %s into a temporary %s image ...\n' "$DEVICE" "$IMAGE_NAME"
+declare -a PASS_BIN_HASH=()
+declare -a PASS_TOC_HASH=()
+declare -a PASS_Q_CRC=()
+declare -a PASS_SPEED=()
 
-read_options=(
-  read-cd
-  --device "$DEVICE"
-  --read-raw
-  --paranoia-mode 3
-)
-if [[ -n "$READ_SPEED" ]]; then
-  read_options+=(--rspeed "$READ_SPEED")
+read_pass() {
+  local pass_number="$1"
+  local pass_speed="$2"
+  local pass_dir="$WORK_DIR/.read-pass-$pass_number"
+  local -a read_options=(
+    read-cd
+    --device "$DEVICE"
+    --read-raw
+    --paranoia-mode 3
+  )
+
+  if [[ -n "$pass_speed" ]]; then
+    read_options+=(--rspeed "$pass_speed")
+    PASS_SPEED[pass_number]="${pass_speed}x"
+  else
+    PASS_SPEED[pass_number]="drive default"
+  fi
+
+  mkdir -- "$pass_dir"
+  printf 'Reading pass %d/%d from %s at %s ...\n' \
+    "$pass_number" "$VERIFY_PASSES" "$DEVICE" "${PASS_SPEED[$pass_number]}"
+  (
+    cd "$pass_dir"
+    cdrdao "${read_options[@]}" \
+      --datafile "$IMAGE_NAME.bin" \
+      "$IMAGE_NAME.toc"
+  ) 2>&1 | tee "$pass_dir/cdrdao.log"
+
+  PASS_BIN_HASH[pass_number]="$(sha256sum -- "$pass_dir/$IMAGE_NAME.bin" | awk '{ print $1 }')"
+  PASS_TOC_HASH[pass_number]="$(sha256sum -- "$pass_dir/$IMAGE_NAME.toc" | awk '{ print $1 }')"
+  PASS_Q_CRC[pass_number]="$(awk '
+    /Q sub-channels with CRC errors/ {
+      for (field = 1; field <= NF; field += 1) {
+        if ($field == "Found" && $(field + 1) ~ /^[0-9]+$/) {
+          total += $(field + 1)
+        }
+      }
+    }
+    END { print total + 0 }
+  ' "$pass_dir/cdrdao.log")"
+
+  printf 'Pass %d BIN SHA-256: %s\n' "$pass_number" "${PASS_BIN_HASH[$pass_number]}"
+  printf 'Pass %d TOC SHA-256: %s\n' "$pass_number" "${PASS_TOC_HASH[$pass_number]}"
+  printf 'Pass %d reported Q CRC frames: %s\n' "$pass_number" "${PASS_Q_CRC[$pass_number]}"
+}
+
+read_pass 1 "$FIRST_PASS_SPEED"
+if ((VERIFY_PASSES == 2)); then
+  read_pass 2 "$SECOND_PASS_SPEED"
 fi
+
+pass_one_dir="$WORK_DIR/.read-pass-1"
+mv -- "$pass_one_dir/$IMAGE_NAME.bin" "$WORK_DIR/$IMAGE_NAME.bin"
+mv -- "$pass_one_dir/$IMAGE_NAME.toc" "$WORK_DIR/$IMAGE_NAME.toc"
+mv -- "$pass_one_dir/cdrdao.log" "$WORK_DIR/cdrdao-pass-1.log"
+rmdir -- "$pass_one_dir"
+
+if ((VERIFY_PASSES == 2)); then
+  pass_two_dir="$WORK_DIR/.read-pass-2"
+  mv -- "$pass_two_dir/cdrdao.log" "$WORK_DIR/cdrdao-pass-2.log"
+  if [[ "${PASS_BIN_HASH[1]}" == "${PASS_BIN_HASH[2]}" &&
+        "${PASS_TOC_HASH[1]}" == "${PASS_TOC_HASH[2]}" ]]; then
+    VERIFY_RESULT="MATCH"
+    rm -f -- "$pass_two_dir/$IMAGE_NAME.bin" "$pass_two_dir/$IMAGE_NAME.toc"
+    rmdir -- "$pass_two_dir"
+    printf 'Verification passed: both BIN and TOC hashes match.\n'
+  else
+    VERIFY_RESULT="MISMATCH"
+    VERIFY_MISMATCH=1
+    mv -- "$pass_two_dir" "$WORK_DIR/verification-pass-2"
+    warn 'verification failed: the two reads do not have identical BIN/TOC hashes'
+    warn 'both read results will be preserved; the disc will not be auto-ejected'
+  fi
+fi
+
+{
+  printf 'Created (UTC): %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf 'Requested passes: %s\n' "$VERIFY_PASSES"
+  printf 'Result: %s\n' "$VERIFY_RESULT"
+  for ((pass_number = 1; pass_number <= VERIFY_PASSES; pass_number += 1)); do
+    printf 'Pass %d speed: %s\n' "$pass_number" "${PASS_SPEED[$pass_number]}"
+    printf 'Pass %d BIN SHA-256: %s\n' "$pass_number" "${PASS_BIN_HASH[$pass_number]}"
+    printf 'Pass %d TOC SHA-256: %s\n' "$pass_number" "${PASS_TOC_HASH[$pass_number]}"
+    printf 'Pass %d reported Q CRC frames: %s\n' "$pass_number" "${PASS_Q_CRC[$pass_number]}"
+  done
+} > "$WORK_DIR/verification-report.txt"
+
+cdrdao disk-info --device "$DEVICE" > "$WORK_DIR/disc-info.txt" 2>&1 || true
+{
+  printf 'Created (UTC): %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf 'Host: %s\n' "$(hostname)"
+  printf 'Source device: %s\n' "$DEVICE"
+  printf 'Verification passes: %s\n' "$VERIFY_PASSES"
+  printf 'Verification result: %s\n' "$VERIFY_RESULT"
+  for ((pass_number = 1; pass_number <= VERIFY_PASSES; pass_number += 1)); do
+    printf 'Pass %d reported Q CRC frames: %s\n' "$pass_number" "${PASS_Q_CRC[$pass_number]}"
+  done
+  lsblk -dn -o NAME,VENDOR,MODEL,REV,SIZE,TYPE "$DEVICE" || true
+} > "$WORK_DIR/dump-metadata.txt"
 
 (
   cd "$WORK_DIR"
-  cdrdao "${read_options[@]}" \
-    --datafile "$IMAGE_NAME.bin" \
-    "$IMAGE_NAME.toc"
-
-  cdrdao disk-info --device "$DEVICE" > disc-info.txt 2>&1 || true
-  {
-    printf 'Created (UTC): %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    printf 'Host: %s\n' "$(hostname)"
-    printf 'Source device: %s\n' "$DEVICE"
-    lsblk -dn -o NAME,VENDOR,MODEL,REV,SIZE,TYPE "$DEVICE"
-  } > dump-metadata.txt
-
-  sha256sum -- "$IMAGE_NAME.bin" "$IMAGE_NAME.toc" > SHA256SUMS
+  checksum_paths=("$IMAGE_NAME.bin" "$IMAGE_NAME.toc")
+  if ((VERIFY_MISMATCH)); then
+    checksum_paths+=(
+      "verification-pass-2/$IMAGE_NAME.bin"
+      "verification-pass-2/$IMAGE_NAME.toc"
+    )
+  fi
+  sha256sum -- "${checksum_paths[@]}" > SHA256SUMS
 )
-
-warn() {
-  printf 'Warning: %s\n' "$*" >&2
-}
 
 lookup_album_folder() {
   local toc_path="$1"
@@ -304,7 +434,7 @@ PY
       if curl --silent --show-error --fail --location \
           --connect-timeout 8 --max-time 35 --retry 2 --retry-delay 2 --retry-all-errors \
           --header 'Accept: application/json' \
-          --user-agent 'dump-cdrom/2.1 (https://github.com/Gavin-LHX/cdrom-dump-tools)' \
+          --user-agent 'dump-cdrom/2.2 (https://github.com/Gavin-LHX/cdrom-dump-tools)' \
           --output "$metadata_tmp" "$lookup_url" &&
          python3 - "$metadata_tmp" <<'PY'
 import json
@@ -453,10 +583,19 @@ if ((EUID == 0)) && [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != root ]]; then
   chown -R -- "$SUDO_USER:$owner_group" "$FINAL_DIR"
 fi
 
-if ((EJECT_AFTER)); then
+if ((EJECT_AFTER && !VERIFY_MISMATCH)); then
   eject "$DEVICE"
 fi
 
 printf 'Done. Image: %s/%s.bin\n' "$FINAL_DIR" "$IMAGE_NAME"
 printf 'TOC:        %s/%s.toc\n' "$FINAL_DIR" "$IMAGE_NAME"
 printf 'Checksums:  %s/SHA256SUMS\n' "$FINAL_DIR"
+printf 'Verify log: %s/verification-report.txt\n' "$FINAL_DIR"
+
+if ((VERIFY_MISMATCH)); then
+  warn "verification mismatch: pass 1 is the canonical image in $FINAL_DIR"
+  warn "pass 2 is preserved in $FINAL_DIR/verification-pass-2"
+  warn 'inspect verification-report.txt and both cdrdao logs; exit status is 2'
+  exit 2
+fi
+
