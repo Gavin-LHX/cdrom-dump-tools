@@ -42,11 +42,16 @@
 - 自动命名为 `01 - 歌曲名.flac`。
 - 默认目录名：`艺术家 - 专辑 (年份) [FLAC/WAV]`。
 - 本地 `.lrc/.txt` 歌词优先；没有时使用 LRCLIB 精确匹配和高置信度搜索。
+- LRCLIB 响应始终从原始字节按 UTF-8 解码，兼容 Windows PowerShell 5.1 的非 ASCII JSON。
+- 严格字段搜索无结果或置信度不足时，自动使用“歌手＋曲名”的宽泛搜索回退。
+- 根据 `Instrumental`、`Off Vocal`、`Karaoke` 等标题标记识别纯音乐，不再计入歌词缺失。
+- 歌词结果区分 `found`、`instrumental`、`not_found`、`low_confidence` 和 `network_error`。
 - 同步歌词保存为同名 `.lrc`，纯文本歌词保存为 `.txt`。
 - FLAC 写入 `LYRICS`、`SYNCEDLYRICS`、`LYRICS_SOURCE` 标签。
 - 纯音乐会标记为 `instrumental`，不会写入伪歌词。
 - 输出 `musicbrainz-metadata.json`、`lyrics-metadata.json`、播放列表和 SHA-256 校验和。
 - 在线服务不可用时使用 30 天缓存或降级转换，不中断音频处理。
+- 歌词缓存使用 `LRCLIB-v2` 命名空间，自动绕过旧版可能存在的乱码或错误空结果缓存。
 
 ## Linux：安装与读取 CD
 
