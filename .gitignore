@@ -5,8 +5,10 @@
 *.lrc
 *.partial.*
 .metadata-cache/
+dist/
 cover.jpg
 folder.jpg
+metadata.json
 musicbrainz-metadata.json
 lyrics-metadata.json
 SHA256SUMS

@@ -1,0 +1,200 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shell:
+    name: Bash and ShellCheck
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned ShellCheck
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          tool_root="$RUNNER_TEMP/shellcheck-0.11.0"
+          archive="$tool_root/shellcheck.tar.xz"
+          mkdir -p "$tool_root"
+          curl --proto '=https' --tlsv1.2 -fsSLo "$archive" \
+            https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz
+          printf '%s  %s\n' \
+            '8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198' \
+            "$archive" |
+            sha256sum --check -
+          tar -xJf "$archive" -C "$tool_root"
+          printf '%s\n' "$tool_root/shellcheck-v0.11.0" >>"$GITHUB_PATH"
+
+      - name: Ensure converter dry-run dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=0
+          for command_name in sox soxi flac metaflac; do
+            if ! command -v "$command_name" >/dev/null 2>&1; then
+              missing=1
+              break
+            fi
+          done
+          if ((missing)); then
+            sudo apt-get update
+            sudo apt-get install -y shellcheck sox flac
+          fi
+
+      - name: Validate Bash syntax and style
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n dump_cdrom.sh bin_to_audio.sh
+          shellcheck --external-sources --severity=warning dump_cdrom.sh bin_to_audio.sh
+          bash dump_cdrom.sh --help >/dev/null
+
+      - name: Run Linux converter offline smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          fixture="$(mktemp -d)"
+          trap 'rm -rf -- "$fixture"' EXIT
+          truncate -s 352800 "$fixture/test-disc.bin"
+          cat >"$fixture/test-disc.toc" <<'TOC'
+          CD_DA
+
+          TRACK AUDIO
+          NO COPY
+          NO PRE_EMPHASIS
+          TWO_CHANNEL_AUDIO
+          FILE "test-disc.bin" 0 00:02:00
+          TOC
+          bash bin_to_audio.sh \
+            --dry-run \
+            --toc "$fixture/test-disc.toc" \
+            --output-dir "$fixture/output" \
+            "$fixture/test-disc.bin"
+
+  powershell:
+    name: Windows PowerShell compatibility
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Parse with PowerShell 7
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = (Resolve-Path -LiteralPath '.\bin_to_audio_windows.ps1').Path
+          $bytes = [IO.File]::ReadAllBytes($path)
+          if ($bytes.Length -lt 3 -or $bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF) {
+              throw 'bin_to_audio_windows.ps1 must remain UTF-8 with BOM for Windows PowerShell 5.1.'
+          }
+          $tokens = $null
+          $errors = $null
+          [void] [System.Management.Automation.Language.Parser]::ParseFile($path, [ref] $tokens, [ref] $errors)
+          if ($errors.Count -gt 0) {
+              $messages = $errors | ForEach-Object { "$($_.Extent.StartLineNumber): $($_.Message)" }
+              throw ($messages -join [Environment]::NewLine)
+          }
+
+      - name: Parse and smoke test with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $scriptPath = (Resolve-Path -LiteralPath '.\bin_to_audio_windows.ps1').Path
+          $tokens = $null
+          $errors = $null
+          [void] [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref] $tokens, [ref] $errors)
+          if ($errors.Count -gt 0) {
+              $messages = $errors | ForEach-Object { "$($_.Extent.StartLineNumber): $($_.Message)" }
+              throw ($messages -join [Environment]::NewLine)
+          }
+
+          $fixture = Join-Path $env:RUNNER_TEMP 'cdrom-dump-tools-smoke'
+          $output = Join-Path $fixture 'output'
+          $null = New-Item -ItemType Directory -Path $fixture -Force
+          [IO.File]::WriteAllBytes((Join-Path $fixture 'test-disc.bin'), [byte[]]::new(352800))
+          $toc = @'
+          CD_DA
+
+          TRACK AUDIO
+          NO COPY
+          NO PRE_EMPHASIS
+          TWO_CHANNEL_AUDIO
+          FILE "test-disc.bin" 0 00:02:00
+          '@
+          [IO.File]::WriteAllText((Join-Path $fixture 'test-disc.toc'), $toc, [Text.Encoding]::ASCII)
+          $fakeFfmpeg = @'
+          @echo off
+          setlocal EnableExtensions DisableDelayedExpansion
+          set "output="
+          :next
+          if "%~1"=="" goto done
+          set "output=%~1"
+          shift
+          goto next
+          :done
+          if not defined output exit /b 1
+          type nul > "%output%"
+          exit /b 0
+          '@
+          $fakeFfmpegPath = Join-Path $fixture 'ffmpeg.cmd'
+          [IO.File]::WriteAllText($fakeFfmpegPath, $fakeFfmpeg, [Text.Encoding]::ASCII)
+
+          & $scriptPath `
+            -BinPath (Join-Path $fixture 'test-disc.bin') `
+            -TocPath (Join-Path $fixture 'test-disc.toc') `
+            -OutputDirectory $output `
+            -FfmpegPath $fakeFfmpegPath `
+            -NoMetadata `
+            -NoCover `
+            -NoLyrics `
+            -NoPause
+          if (-not (Test-Path -LiteralPath (Join-Path $output 'track-01.flac'))) {
+              throw 'Windows PowerShell smoke test did not create the expected output track.'
+          }
+
+      - name: Run critical PSScriptAnalyzer rules
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Repository PSGallery -Scope CurrentUser -Force -AllowClobber
+          Import-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Force
+          $rules = @(
+              'PSAvoidAssignmentToAutomaticVariable',
+              'PSAvoidUsingConvertToSecureStringWithPlainText',
+              'PSAvoidUsingInvokeExpression',
+              'PSAvoidUsingPlainTextForPassword',
+              'PSAvoidUsingUsernameAndPasswordParams',
+              'PSPossibleIncorrectComparisonWithNull',
+              'PSPossibleIncorrectUsageOfAssignmentOperator',
+              'PSPossibleIncorrectUsageOfRedirectionOperator',
+              'PSReservedCmdletChar',
+              'PSReservedParams',
+              'PSUsePSCredentialType',
+              'PSUseApprovedVerbs'
+          )
+          $issues = @(Invoke-ScriptAnalyzer -Path '.\bin_to_audio_windows.ps1' -IncludeRule $rules)
+          if ($issues.Count -gt 0) {
+              $issues | Format-Table Severity, RuleName, Line, Column, Message -AutoSize
+              throw "PSScriptAnalyzer found $($issues.Count) blocking issue(s)."
+          }
