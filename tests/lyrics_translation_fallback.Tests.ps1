@@ -117,8 +117,12 @@ try {
         'Merge-SyncedLyricsTranslation',
         'Merge-MachineTranslatedSyncedLyrics',
         'New-OnlineLyricsResult',
+        'Resolve-LyricsTranslationSettings',
         'Test-TranslationCreditLine',
         'Test-LikelyChineseLyrics',
+        'Test-LyricsResultHasChineseContent',
+        'Test-LyricsCandidatesHaveChineseContent',
+        'Select-PreferredLyricsCandidate',
         'Get-LyricsTranslationPayload',
         'Get-UniqueLyricsTranslationItems',
         'Split-LyricsTranslationBatches',
@@ -128,7 +132,8 @@ try {
         'Assert-LyricsTranslationAlignment',
         'Expand-LyricsTranslations',
         'ConvertTo-TranslatedLyricsText',
-        'Get-LyricsTranslationSystemPrompt'
+        'Get-LyricsTranslationSystemPrompt',
+        'Resolve-ChineseLyricsTranslationFallback'
     )
     $functionAsts = @($scriptAst.FindAll({
         param($node)
@@ -210,6 +215,56 @@ BAD KEY=do-not-display-this-secret
     $unsafeQueryUrl = Resolve-TranslationServiceUrl -Value 'https://api.example.com/v1?key=secret' -ConfigurationName 'TEST_URL' 3>$null
     Assert-True ([string]::IsNullOrWhiteSpace([string] $unsafeQueryUrl)) 'service URLs containing query strings are rejected'
 
+    $translationEnvironmentNames = @(
+        'LYRICS_TRANSLATION_FALLBACK',
+        'AI_TRANSLATION_PROVIDER',
+        'GOOGLE_TRANSLATE_API_KEY',
+        'OPENAI_API_KEY',
+        'OPENAI_MODEL',
+        'ANTHROPIC_API_KEY',
+        'ANTHROPIC_MODEL'
+    )
+    $previousTranslationEnvironment = @{}
+    try {
+        foreach ($name in $translationEnvironmentNames) {
+            $previousTranslationEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, [EnvironmentVariableTarget]::Process)
+            [Environment]::SetEnvironmentVariable($name, $null, [EnvironmentVariableTarget]::Process)
+        }
+        $configuredServices = @{
+            GOOGLE_TRANSLATE_API_KEY = 'google-test-key'
+            OPENAI_API_KEY           = 'openai-test-key'
+            OPENAI_MODEL             = 'openai-test-model'
+            ANTHROPIC_API_KEY        = 'anthropic-test-key'
+            ANTHROPIC_MODEL          = 'anthropic-test-model'
+        }
+        $defaultSettings = Resolve-LyricsTranslationSettings `
+            -Mode 'Auto' `
+            -AiProvider 'Auto' `
+            -DotEnvValues $configuredServices `
+            -EnvironmentDirectory $temporaryRoot
+        Assert-Equal 'AIThenGoogle' $defaultSettings.Mode 'Auto defaults to AI before Google'
+        Assert-Equal 'OpenAI,Anthropic,Google' (@($defaultSettings.Providers) -join ',') 'all configured AI formats run before Google'
+
+        $googleOnlySettings = Resolve-LyricsTranslationSettings `
+            -Mode 'AIThenGoogle' `
+            -AiProvider 'Auto' `
+            -DotEnvValues @{ GOOGLE_TRANSLATE_API_KEY = 'google-test-key' } `
+            -EnvironmentDirectory $temporaryRoot
+        Assert-Equal 'Google' (@($googleOnlySettings.Providers) -join ',') 'AI-first mode falls back to Google when no AI format is configured'
+
+        $legacyOrderSettings = Resolve-LyricsTranslationSettings `
+            -Mode 'GoogleThenAI' `
+            -AiProvider 'Auto' `
+            -DotEnvValues $configuredServices `
+            -EnvironmentDirectory $temporaryRoot
+        Assert-Equal 'Google,OpenAI,Anthropic' (@($legacyOrderSettings.Providers) -join ',') 'an explicit legacy Google-first order remains supported'
+    }
+    finally {
+        foreach ($name in $translationEnvironmentNames) {
+            [Environment]::SetEnvironmentVariable($name, $previousTranslationEnvironment[$name], [EnvironmentVariableTarget]::Process)
+        }
+    }
+
     Assert-True (Test-LikelyChineseLyrics '抬头望着夜空，我仍在寻找你的声音。') 'substantive simplified Chinese is recognized'
     Assert-True (-not (Test-LikelyChineseLyrics '夜空を見上げて、君の声を探している。')) 'Japanese kanji mixed with kana is not mistaken for Chinese'
     Assert-True (-not (Test-LikelyChineseLyrics '별이 빛나는 밤에 너를 찾고 있어')) 'Korean lyrics are not mistaken for Chinese'
@@ -219,6 +274,167 @@ BAD KEY=do-not-display-this-secret
     Assert-True (-not (Test-LikelyChineseLyrics "夢幻世界`n愛情物語`n君を探してる")) 'Japanese lyrics with kanji-only lines remain eligible for translation'
     Assert-True (-not (Test-LikelyChineseLyrics "夢幻世界`n愛情物語")) 'fully kanji Japanese text is not assumed to be Chinese'
     Assert-True (-not (Test-LikelyChineseLyrics "夢幻世界`nHello world")) 'a kanji title embedded in English text is not assumed to be Chinese'
+    Assert-True (-not (Test-LikelyChineseLyrics "目的達成`n目的達成")) 'repeated Han characters shared with Japanese do not count as Chinese grammar evidence'
+    Assert-True (-not (Test-LikelyChineseLyrics "原点回帰`n終着点`n皇后陛下")) 'Japanese shared glyphs are not treated as simplified-only Chinese evidence'
+    Assert-True (-not (Test-LikelyChineseLyrics "都内到着`n被告人着席")) 'multiple Japanese grammar-like Han characters do not imply Chinese'
+    Assert-True (-not (Test-LikelyChineseLyrics "再起不能`n不要不急")) 'Japanese compounds shared with Chinese do not imply Chinese'
+    Assert-True (Test-LikelyChineseLyrics "风吹麦浪`n梦回故乡") 'short simplified Chinese lyrics are recognized from simplified-only glyphs'
+    Assert-True (Test-LikelyChineseLyrics "仰望着夜空`n我仍在寻找你的声音") 'Chinese phrase evidence recognizes lyrics with only one distinctive simplified glyph'
+    Assert-True (Test-LikelyChineseLyrics "你好世界`n我在等你") 'modern Chinese-exclusive glyphs identify short Chinese lyrics'
+    Assert-True (Test-LikelyChineseLyrics "你好吗`n我想你") 'short conversational Chinese remains recognized'
+    Assert-True (Test-LikelyChineseLyrics "春风十里`n山河故人") 'one true simplified glyph can identify otherwise poetic Han-only Chinese'
+
+    $netEaseOriginal = [pscustomobject]@{
+        OriginalPlainLyrics = "夜空を見上げて`n君の声を探している"
+        PlainLyrics         = "夜空を見上げて`n君の声を探している"
+        SyncedLyrics        = $null
+        Instrumental       = $false
+        Source             = 'NetEase Cloud Music'
+    }
+    $qqOriginal = [pscustomobject]@{
+        OriginalPlainLyrics = "星空を見上げて`n君を待っている"
+        PlainLyrics         = "星空を見上げて`n君を待っている"
+        SyncedLyrics        = $null
+        Instrumental       = $false
+        Source             = 'QQ Music'
+    }
+    $qqChinese = New-OnlineLyricsResult `
+        -OriginalLyrics "星空を見上げて`n君を待っている" `
+        -TranslatedLyrics "仰望着星空`n我依然在等你" `
+        -Source 'QQ Music'
+    $lrcLibChinese = [pscustomobject]@{
+        PlainLyrics   = "仰望着夜空`n我仍在寻找你的声音"
+        SyncedLyrics  = $null
+        Instrumental = $false
+        Source       = 'LRCLIB exact match'
+    }
+    $instrumentalCandidate = [pscustomobject]@{
+        PlainLyrics   = $null
+        SyncedLyrics  = $null
+        Instrumental = $true
+        Source       = 'NetEase Cloud Music instrumental'
+    }
+
+    Assert-True (-not (Test-LyricsCandidatesHaveChineseContent -Candidates @($netEaseOriginal))) 'NetEase original-only lyrics continue to QQ Music'
+    Assert-True (-not (Test-LyricsCandidatesHaveChineseContent -Candidates @($netEaseOriginal, $qqOriginal))) 'NetEase and QQ original-only lyrics continue to LRCLIB'
+    Assert-True (Test-LyricsCandidatesHaveChineseContent -Candidates @($netEaseOriginal, $qqChinese)) 'QQ Chinese translation stops the source fallback before LRCLIB'
+    $qqSelection = Select-PreferredLyricsCandidate -Candidates @($netEaseOriginal, $qqChinese)
+    Assert-Equal 'QQ Music' $qqSelection.Lyrics.Source 'QQ Chinese translation wins over an earlier untranslated NetEase original'
+    Assert-Equal 'Chinese' $qqSelection.Selection 'the selected QQ result is classified as Chinese'
+    $lrcSelection = Select-PreferredLyricsCandidate -Candidates @($netEaseOriginal, $qqOriginal, $lrcLibChinese)
+    Assert-Equal 'LRCLIB exact match' $lrcSelection.Lyrics.Source 'Chinese LRCLIB text wins when both domestic sources lack Chinese'
+    $originalSelection = Select-PreferredLyricsCandidate -Candidates @($netEaseOriginal, $qqOriginal)
+    Assert-Equal 'NetEase Cloud Music' $originalSelection.Lyrics.Source 'the earliest source supplies the machine-translation original when no source has Chinese'
+    Assert-Equal 'Original' $originalSelection.Selection 'an untranslated winning candidate is marked for AI and Google fallback'
+    $lyricalSelection = Select-PreferredLyricsCandidate -Candidates @($instrumentalCandidate, $qqOriginal)
+    Assert-Equal 'QQ Music' $lyricalSelection.Lyrics.Source 'substantive lyrics win over an earlier instrumental marker'
+
+    $script:translationProviderCalls = [System.Collections.Generic.List[string]]::new()
+    $script:openAiTranslationShouldFail = $false
+    $script:googleTranslationShouldFail = $false
+    function Get-CachedLyricsTranslation {
+        param($CachePath, $Payload, $Provider, $Model, $ServiceHash, $ContextHash, $PromptHash)
+        return $null
+    }
+    function Save-LyricsTranslationCache {
+        param($CachePath, $Payload, $Provider, $Model, $ServiceHash, $ContextHash, $PromptHash, $Translations)
+    }
+    function New-TestTranslations {
+        param([object[]] $Items, [string] $Prefix)
+
+        return @($Items | ForEach-Object {
+            [pscustomobject]@{
+                Id   = [string] $_.Id
+                Text = "$Prefix$($_.Id)"
+            }
+        })
+    }
+    function Invoke-OpenAiLyricsTranslation {
+        param($Items, $Settings, $Title, $Artist, $Album)
+        $script:translationProviderCalls.Add('OpenAI')
+        if ($script:openAiTranslationShouldFail) {
+            throw 'simulated OpenAI failure'
+        }
+        return New-TestTranslations -Items @($Items) -Prefix 'AI译文'
+    }
+    function Invoke-AnthropicLyricsTranslation {
+        param($Items, $Settings, $Title, $Artist, $Album)
+        $script:translationProviderCalls.Add('Anthropic')
+        throw 'Anthropic should not be called in this test'
+    }
+    function Invoke-GoogleLyricsTranslation {
+        param($Items, $Settings)
+        $script:translationProviderCalls.Add('Google')
+        if ($script:googleTranslationShouldFail) {
+            throw 'simulated Google failure'
+        }
+        return New-TestTranslations -Items @($Items) -Prefix '谷歌译文'
+    }
+
+    $fallbackSourceLyrics = [pscustomobject]@{
+        OriginalPlainLyrics   = "夜空を見上げて`n君の声を探している"
+        PlainLyrics           = "夜空を見上げて`n君の声を探している"
+        SyncedLyrics          = $null
+        RomanizedPlainLyrics  = "yozora o miagete`nkimi no koe o sagashite iru"
+        Instrumental         = $false
+        HasChineseTranslation = $false
+        Source               = 'NetEase Cloud Music'
+        Id                   = 'netease-test-id'
+    }
+    $fallbackSettings = [pscustomobject]@{
+        Providers          = @('OpenAI', 'Google')
+        OpenAiModel        = 'openai-test-model'
+        OpenAiBaseUrl      = 'https://api.openai.com/v1'
+        GoogleEndpoint     = 'https://translation.googleapis.com/language/translate/v2'
+        PromptHash         = 'test-prompt-hash'
+        GoogleApiKey       = 'google-test-key'
+    }
+    $translationCacheRoot = Join-Path $temporaryRoot 'translation-cache'
+
+    $script:translationProviderCalls.Clear()
+    $script:openAiTranslationShouldFail = $false
+    $script:googleTranslationShouldFail = $false
+    $aiResolution = Resolve-ChineseLyricsTranslationFallback `
+        -LyricsResult $fallbackSourceLyrics `
+        -Settings $fallbackSettings `
+        -CacheRoot $translationCacheRoot `
+        -Title 'Test title' `
+        -Artist 'Test artist' `
+        -Album 'Test album'
+    Assert-True $aiResolution.Applied 'a successful AI translation is applied'
+    Assert-Equal 'OpenAI' $aiResolution.Lyrics.TranslationProvider 'AI is the first machine-translation provider'
+    Assert-Equal 'OpenAI' (@($script:translationProviderCalls) -join ',') 'Google is not called after AI succeeds'
+
+    $script:translationProviderCalls.Clear()
+    $script:openAiTranslationShouldFail = $true
+    $script:googleTranslationShouldFail = $false
+    $googleResolution = Resolve-ChineseLyricsTranslationFallback `
+        -LyricsResult $fallbackSourceLyrics `
+        -Settings $fallbackSettings `
+        -CacheRoot $translationCacheRoot `
+        -Title 'Test title' `
+        -Artist 'Test artist' `
+        -Album 'Test album' `
+        3>$null
+    Assert-True $googleResolution.Applied 'Google is applied after AI fails'
+    Assert-Equal 'Google' $googleResolution.Lyrics.TranslationProvider 'Google is recorded as the fallback provider'
+    Assert-Equal 'OpenAI,Google' (@($script:translationProviderCalls) -join ',') 'machine translation calls AI before Google'
+
+    $script:translationProviderCalls.Clear()
+    $script:openAiTranslationShouldFail = $true
+    $script:googleTranslationShouldFail = $true
+    $failedResolution = Resolve-ChineseLyricsTranslationFallback `
+        -LyricsResult $fallbackSourceLyrics `
+        -Settings $fallbackSettings `
+        -CacheRoot $translationCacheRoot `
+        -Title 'Test title' `
+        -Artist 'Test artist' `
+        -Album 'Test album' `
+        3>$null
+    Assert-True (-not $failedResolution.Applied) 'all provider failures preserve the source lyrics'
+    Assert-Equal 'NetEase Cloud Music' $failedResolution.Lyrics.Source 'all provider failures preserve the original source'
+    Assert-Equal 'netease-test-id' $failedResolution.Lyrics.Id 'all provider failures preserve the original source ID'
+    Assert-Equal 'OpenAI,Google' (@($script:translationProviderCalls) -join ',') 'all configured fallbacks are attempted in order'
 
     $creditedJapaneseLyrics = "作词：张三`n作曲：李四`n夜空を見上げて"
     $creditedJapanesePayload = Get-LyricsTranslationPayload -LyricsResult ([pscustomobject]@{
