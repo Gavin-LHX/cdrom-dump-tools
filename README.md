@@ -37,27 +37,34 @@
 - 使用 FFmpeg 输出无损 FLAC 或 WAV。
 - 自动计算 MusicBrainz Disc ID 并匹配正确发行版本。
 - 自动写入曲名、歌手、专辑、年份、日期、流派、ISRC、条码和 MusicBrainz ID。
-- 使用 MusicBrainz、Apple iTunes Search 和 Wikidata 比对年份及流派。
+- 光盘身份识别固定优先使用 MusicBrainz Disc ID/TOC；若查不到，才会读取同目录可信 JSON、TOC CD-TEXT 或 `艺术家 - 专辑 (年份)` 目录名作为搜索提示，并且仍须由国内平台候选通过轨数/时长校验后才接受。
+- 识别出发行版后，曲名、艺人和专辑等展示字段默认按“选定的国内主源（网易云优先，可切换为 QQ）→ MusicBrainz”填充；日期和流派优先采用已验证国内源，缺失时再由 MusicBrainz、Apple、Wikidata 等证据补全和比对。
+- 网易云和 QQ 音乐候选都必须通过专辑名、艺人、曲目数及整张专辑逐轨时长校验；高置信度匹配才会覆盖曲名、艺人、专辑、日期、文件名和封面，数字版与实体 CD 轨数不同时不会误套。
+- 若实体 CD 比国内数字版多附赠曲，脚本会在保留 MusicBrainz 实体专辑身份的前提下逐轨搜索；单曲只有同时通过标题版本、艺人、专辑和不超过 3 秒的时长校验才写入国内歌曲 ID/规范曲名。逐轨结果不会冒充整专匹配，也不会改变专辑、日期或封面。
+- 网易云匹配写入 `NETEASECLOUDMUSIC_ALBUMID`、`NETEASECLOUDMUSIC_TRACKID`；QQ 音乐匹配写入 `QQMUSIC_ALBUMMID`、`QQMUSIC_TRACKMID`。JSON 同时保留 MusicBrainz 原始曲名及两个国内平台的 ID。
+- 国内源均失败、被风控或得分不足时自动保留 MusicBrainz 标题；Apple 与 Wikidata 继续补充年份和流派，Apple、Deezer、Wikidata 等继续参与后续封面回退。
 - 流派标签优先采用英文，并统一常见大小写与本地化名称（例如 `テクノ` → `Techno`、`アニメ` → `Anime`、`j-pop` → `J-Pop`）；同一专辑的全部曲目写入相同流派。
-- 封面按“Cover Art Archive 精确发行版 → Cover Art Archive 发行组 → Apple iTunes Search → Deezer → Wikidata/Wikimedia Commons”顺序自动回退。
+- 封面优先复用通过验证的本地缓存；没有有效缓存时，按“选中的国内主源 → 另一个已验证国内源 → Cover Art Archive 精确发行版 → Cover Art Archive 发行组 → Apple iTunes Search → Deezer → Wikidata/Wikimedia Commons”顺序自动回退。
 - Windows PowerShell 5.1 下使用 .NET 二进制流保存封面，兼容含中文、日文等非 ASCII 字符的输出路径；本地写盘错误不会再被误判为网络故障反复等待。
 - Apple 和 Deezer 候选会按专辑名/别名、艺人、轨数及年份交叉评分，低置信度图片不会写入；下载内容还会经 FFmpeg 解码验证并统一转换为 JPEG。
-- 生成 `cover.jpg`、`folder.jpg`，并把封面嵌入 FLAC；实际采用的来源、URL、匹配依据和置信度记录在 `musicbrainz-metadata.json`。
+- 生成 `cover.jpg`、`folder.jpg`，并把封面嵌入 FLAC；实际采用的来源、URL、匹配依据和置信度记录在 `metadata.json`，同时保留兼容旧版的 `musicbrainz-metadata.json`。
 - 自动命名为 `01 - 歌曲名.flac`。
 - 默认目录名：`艺术家 - 专辑 (年份) [FLAC/WAV]`。
-- 本地 `.lrc/.txt` 歌词优先；没有时使用 LRCLIB 精确匹配和高置信度搜索。
+- 本地 `.lrc/.txt` 仍作为用户手动覆盖；在线歌词先查网易云音乐，若网易云结果没有中文翻译再查 QQ 音乐，并优先选取带中文逐行翻译的国内候选。因此，QQ 有中译时会优先于网易云无中译结果；国内源均无可用歌词时再回退 LRCLIB。
+- 网易云歌词同时请求原文、中文翻译和可用的罗马音；QQ 音乐也请求原文、中文翻译及罗马音，并在接口返回可直接解码的内容时保留。翻译会与原文合并为双语 LRC/SRT，但不会把两个不同来源的歌词强行拼接。
+- 只有署名、作曲/编曲信息、`暂无歌词` 或纯音乐占位文字的响应会被判定为无实质歌词并立即回退，QQ 返回的无歌词状态也不会当作网络故障反复重试。
 - LRCLIB 响应始终从原始字节按 UTF-8 解码，兼容 Windows PowerShell 5.1 的非 ASCII JSON。
 - 严格字段搜索无结果或置信度不足时，自动使用“歌手＋曲名”的宽泛搜索回退。
 - 根据 `Instrumental`、`Off Vocal`、`Karaoke` 等标题标记识别纯音乐，不再计入歌词缺失。
 - 歌词结果区分 `found`、`instrumental`、`not_found`、`low_confidence` 和 `network_error`。
 - 同步歌词保存为同名 `.lrc`，纯文本歌词保存为 `.txt`。
 - 同步 `.lrc` 会同时转换为 UTF-8 SRT，集中保存到输出目录的 `Subtitles/` 文件夹；文件名与音频一致，可供 VLC 等播放器加载。
-- FLAC 写入 `LYRICS`、`SYNCEDLYRICS`、`LYRICS_SOURCE` 标签。
+- FLAC 写入 `LYRICS`、`SYNCEDLYRICS`、`LYRICS_SOURCE`，并分别保留 `LYRICS_ORIGINAL`、`LYRICS_TRANSLATION`、`LYRICS_ROMANIZED` 及对应同步标签。
 - 纯音乐会标记为 `instrumental`，不会写入伪歌词。
-- 输出 `musicbrainz-metadata.json`、`lyrics-metadata.json`、播放列表和 SHA-256 校验和。
+- 输出 `metadata.json`、兼容旧版的 `musicbrainz-metadata.json`、`lyrics-metadata.json`、播放列表和 SHA-256 校验和。
 - MusicBrainz 请求全局限制为最多每 1.1 秒一次；遇到 429、503 或临时 5xx 时遵循 `Retry-After` 或指数退避，最多重试 5 次后再使用镜像/缓存。
 - 在线服务不可用时使用 30 天缓存、多源回退或降级转换，不中断音频处理。
-- 歌词缓存使用 `LRCLIB-v2` 命名空间，自动绕过旧版可能存在的乱码或错误空结果缓存。
+- 网易云、QQ 音乐和 LRCLIB 歌词使用独立缓存命名空间；接口临时不可用时会依次切换备用域名、退避重试、使用缓存或进入下一来源。
 
 ## Linux：安装与读取 CD
 
@@ -177,11 +184,13 @@ Linux 转换器是基础离线版本，只写入轨号和 TOC 中已有的 ISRC�
 
 脚本会优先使用 `PATH` 中的 `ffmpeg.exe`，也可通过 `-FfmpegPath` 明确指定。
 
-MusicBrainz 要求客户端不超过每秒一次请求。脚本会在所有 MusicBrainz 主站请求之间统一等待 1.1 秒，并缓存结果；HTTP 503 既可能是当前 IP/客户端速率过高，也可能是服务整体繁忙，因此脚本会自动退避重试，不会立即丢弃专辑信息。Apple Search API 也有独立节流和 30 天缓存。
+MusicBrainz 要求客户端不超过每秒一次请求。脚本会在所有 MusicBrainz 主站请求之间统一等待 1.1 秒，并缓存结果；HTTP 503 既可能是当前 IP/客户端速率过高，也可能是服务整体繁忙，因此脚本会自动退避重试，不会立即丢弃专辑信息。网易云音乐、QQ 音乐和 Apple Search API 也有独立节流、响应校验、重试和 30 天缓存。
 
 ### 拖放使用
 
 将 `.bin` 文件拖到 `bin_to_audio_windows.cmd` 上，脚本会查找同目录同名 `.toc`，默认输出 FLAC。
+
+转换成功后，脚本在交互式且标准输入未重定向时默认停留在 `Press any key to exit...`，按任意键才会关闭，因此可以先查看元数据、封面、歌词和输出目录等处理结果。直接从 PowerShell 运行时行为相同；批处理或自动化任务可添加 `-NoPause` 跳过等待。
 
 ### PowerShell 使用
 
@@ -212,8 +221,23 @@ MusicBrainz 要求客户端不超过每秒一次请求。脚本会在所有 Musi
 # 不查询、保存或嵌入歌词
 -NoLyrics
 
+# 不使用网易云音乐元数据和歌词；仍会尝试 QQ 音乐及后续源
+-NoNetEase
+
+# 不使用 QQ 音乐元数据和歌词
+-NoQQMusic
+
+# 转换完成后不等待按键，适合批处理或自动化；默认会等待按任意键退出
+-NoPause
+
+# 标签和封面的两个国内源均匹配时优先使用 QQ 音乐；默认值为 NetEaseFirst，不改变歌词的中文翻译优先规则
+-DomesticSourcePriority QQMusicFirst
+
 # MusicBrainz 返回多个发行版本时选择指定序号
 -ReleaseIndex 2
+
+# 自定义符合 MusicBrainz 要求的客户端 User-Agent
+-MusicBrainzUserAgent 'MyCdRipper/1.0 (contact@example.com)'
 ```
 
 ## 本地歌词命名
@@ -227,7 +251,7 @@ track-01.lrc
 01.lrc
 ```
 
-纯文本歌词可使用相同名称和 `.txt` 后缀。本地歌词优先级高于 LRCLIB。
+纯文本歌词可使用相同名称和 `.txt` 后缀。本地文件属于显式人工覆盖，优先级高于网易云、QQ 音乐和 LRCLIB。
 
 ## 关于 Q 子通道 CRC 提示
 
@@ -284,6 +308,7 @@ verification-pass-2/
 ├── cover.jpg
 ├── folder.jpg
 ├── tracks.m3u8
+├── metadata.json
 ├── musicbrainz-metadata.json
 ├── lyrics-metadata.json
 └── SHA256SUMS.txt
@@ -303,12 +328,17 @@ sha256sum --check SHA256SUMS
 - WAV 对封面和自定义歌词标签的播放器兼容性有限，因此脚本始终保留同名歌词旁挂文件。
 - 只有带时间戳的 `.lrc` 能准确转换为 SRT；纯文本 `.txt` 没有时间信息，因此仍只作为歌词旁挂文件保留。
 - 不同发行版、再版和地区版可能共享相似曲目表。出现多个 MusicBrainz 匹配时请确认发行日期、国家和介质序号。
+- 逐轨国内匹配仍要求候选属于同名专辑；国内平台只把附赠曲收录在另一张专辑时会保留 MusicBrainz 标签并继续使用后续歌词源，这是有意的防误配策略。
+- CD 音频本身通常不包含可搜索的专辑名，因此 MusicBrainz 仍承担首要 Disc ID/TOC 身份识别。若 MusicBrainz 完全没有该光盘，脚本只会采用同目录已有 JSON、TOC CD-TEXT 或结构明确的目录名作为提示；国内候选未通过整专轨数和时长校验时仍降级为基础轨号，不会仅凭名字猜专辑。
 - 在线查询会向元数据服务发送 Disc ID、专辑/歌曲名称和时长，不会上传音频内容。
+- 网易云音乐接口不是稳定的公开开发者 API，若服务端以后改变响应格式，脚本会安全回退到 MusicBrainz 标题，不会阻止音频转换。
 - 请仅归档和转换你有权处理的光盘与歌词。
 
 ## 使用的在线服务
 
 - [MusicBrainz](https://musicbrainz.org/)：Disc ID、发行版和曲目信息
+- [网易云音乐](https://music.163.com/)：经时长验证后的规范曲名、多艺人、歌曲 ID、原文歌词、中文翻译及可用罗马音
+- [QQ 音乐](https://y.qq.com/)：国内展示曲名、艺人、专辑日期、封面、歌曲 MID、原文歌词及中文翻译
 - [Cover Art Archive](https://coverartarchive.org/)：精确发行版与发行组封面
 - [Apple iTunes Search API](https://performance-partners.apple.com/search-api)：年份/流派交叉验证及高置信度封面回退
 - [Deezer](https://developers.deezer.com/api)：高置信度封面回退
