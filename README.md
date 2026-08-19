@@ -12,6 +12,7 @@
 | `bin_to_audio.sh` | Linux | 将纯 CD-DA 的 BIN/TOC 拆分为基础 FLAC/WAV 音轨 |
 | `bin_to_audio_windows.ps1` | Windows | 增强转换器：拆轨、元数据、年份/流派比对、封面、歌词和自动命名 |
 | `bin_to_audio_windows.cmd` | Windows | 拖放式启动器，默认调用 PowerShell 脚本转换为 FLAC |
+| `.env.example` | Windows | 机器翻译回退的配置模板；复制为 `.env` 后填写 API Key，真实 `.env` 不应提交或分享 |
 
 ## 功能概览
 
@@ -52,6 +53,8 @@
 - 默认目录名：`艺术家 - 专辑 (年份) [FLAC/WAV]`。
 - 本地 `.lrc/.txt` 仍作为用户手动覆盖；在线歌词先查网易云音乐，若网易云结果没有中文翻译再查 QQ 音乐，并优先选取带中文逐行翻译的国内候选。因此，QQ 有中译时会优先于网易云无中译结果；国内源均无可用歌词时再回退 LRCLIB。
 - 网易云歌词同时请求原文、中文翻译和可用的罗马音；QQ 音乐也请求原文、中文翻译及罗马音，并在接口返回可直接解码的内容时保留。翻译会与原文合并为双语 LRC/SRT，但不会把两个不同来源的歌词强行拼接。
+- 完成网易云、QQ 音乐和 LRCLIB 的歌词搜索后，如果最终选中的有效歌词仍没有中文翻译，并且 `.env` 中配置了可用 API，才会按指定顺序调用 Google Cloud Translation 或 AI 翻译；已有中文、纯音乐、没有有效歌词或没有完整 API 配置时不会调用。
+- AI 翻译同时兼容 OpenAI-compatible Chat Completions 与 Anthropic-compatible Messages 格式。内置“信、达、雅”Prompt 要求忠实原意、自然通顺、保留意象风格，并严格保持逐行 ID、顺序和数量；LRC 时间戳始终在本地重建。
 - 只有署名、作曲/编曲信息、`暂无歌词` 或纯音乐占位文字的响应会被判定为无实质歌词并立即回退，QQ 返回的无歌词状态也不会当作网络故障反复重试。
 - LRCLIB 响应始终从原始字节按 UTF-8 解码，兼容 Windows PowerShell 5.1 的非 ASCII JSON。
 - 严格字段搜索无结果或置信度不足时，自动使用“歌手＋曲名”的宽泛搜索回退。
@@ -65,6 +68,7 @@
 - MusicBrainz 请求全局限制为最多每 1.1 秒一次；遇到 429、503 或临时 5xx 时遵循 `Retry-After` 或指数退避，最多重试 5 次后再使用镜像/缓存。
 - 在线服务不可用时使用 30 天缓存、多源回退或降级转换，不中断音频处理。
 - 网易云、QQ 音乐和 LRCLIB 歌词使用独立缓存命名空间；接口临时不可用时会依次切换备用域名、退避重试、使用缓存或进入下一来源。
+- Google/AI 译文按服务、模型、Prompt 版本和原歌词哈希保存在本机独立缓存中，重复转换相同内容时可避免不必要的 API 调用和费用。
 
 ## Linux：安装与读取 CD
 
@@ -207,6 +211,19 @@ MusicBrainz 要求客户端不超过每秒一次请求。脚本会在所有 Musi
   -TocPath 'D:\CD\disc.toc' `
   -OutputDirectory 'D:\Music\My Album' `
   -FfmpegPath 'D:\Apps\FFmpeg\bin\ffmpeg.exe'
+
+# 网易云/QQ/LRCLIB 均没有中文翻译时，先用 Google，失败后再用 OpenAI/Anthropic 格式的 AI
+.\bin_to_audio_windows.ps1 `
+  -BinPath 'D:\CD\disc.bin' `
+  -LyricsTranslationFallback GoogleThenAI `
+  -AiTranslationProvider Auto
+
+# 使用其他位置的配置文件，并强制采用 Anthropic-compatible Messages 格式
+.\bin_to_audio_windows.ps1 `
+  -BinPath 'D:\CD\disc.bin' `
+  -EnvPath 'D:\Secrets\cdrom-dump-tools.env' `
+  -LyricsTranslationFallback AI `
+  -AiTranslationProvider Anthropic
 ```
 
 可选开关：
@@ -230,6 +247,16 @@ MusicBrainz 要求客户端不超过每秒一次请求。脚本会在所有 Musi
 # 转换完成后不等待按键，适合批处理或自动化；默认会等待按任意键退出
 -NoPause
 
+# 中文歌词机器翻译回退：Auto、None、Google、AI、GoogleThenAI 或 AIThenGoogle
+# Auto 读取 .env 的 LYRICS_TRANSLATION_FALLBACK；模板默认 GoogleThenAI
+-LyricsTranslationFallback GoogleThenAI
+
+# AI API 格式：Auto、OpenAI 或 Anthropic；Auto 依次尝试已完整配置的 OpenAI、Anthropic
+-AiTranslationProvider Auto
+
+# 指定其他 .env 文件；相对路径以当前工作目录为准。未指定时读取脚本旁的 .env
+-EnvPath 'D:\Secrets\cdrom-dump-tools.env'
+
 # 标签和封面的两个国内源均匹配时优先使用 QQ 音乐；默认值为 NetEaseFirst，不改变歌词的中文翻译优先规则
 -DomesticSourcePriority QQMusicFirst
 
@@ -240,12 +267,57 @@ MusicBrainz 要求客户端不超过每秒一次请求。脚本会在所有 Musi
 -MusicBrainzUserAgent 'MyCdRipper/1.0 (contact@example.com)'
 ```
 
+### 中文歌词机器翻译回退
+
+机器翻译默认是条件式回退，不会替代平台已有的中文翻译。脚本先按现有顺序获取本地歌词及网易云、QQ 音乐、LRCLIB 结果；只有最终选中的非纯音乐歌词仍无中文翻译，并且所选翻译服务的 API Key 与模型等必填项已经配置时，才会把歌词交给翻译服务。任何翻译接口失败都只会保留原歌词并继续转换音频。
+
+Windows 发布包和仓库都提供 `.env.example`。首次使用时在 `bin_to_audio_windows.ps1` 所在目录执行：
+
+```powershell
+Copy-Item .env.example .env
+notepad .env
+```
+
+`.env` 已被 Git 忽略，不会进入发布归档。也可以不创建脚本旁的 `.env`，改用 `-EnvPath` 指向其他文件。命令行的 `-LyricsTranslationFallback`、`-AiTranslationProvider` 优先于 `.env`；其他配置也可由同名进程环境变量提供，进程环境变量优先于 `.env`。
+
+翻译模式：
+
+- `None`：关闭 Google/AI 翻译。
+- `Google`：只使用 Google Cloud Translation Basic v2。
+- `AI`：只使用已配置的 AI API 格式。
+- `GoogleThenAI`：Google 失败或不可用时再尝试 AI。
+- `AIThenGoogle`：AI 失败或不可用时再尝试 Google。
+- 参数值 `Auto`：读取 `LYRICS_TRANSLATION_FALLBACK`；若仍为 `Auto` 或未配置，则采用 `GoogleThenAI`，但只保留真正配置完整的服务。
+
+`.env` 支持以下变量：
+
+| 变量 | 说明 |
+| --- | --- |
+| `LYRICS_TRANSLATION_FALLBACK` | `None`、`Google`、`AI`、`GoogleThenAI` 或 `AIThenGoogle` |
+| `AI_TRANSLATION_PROVIDER` | `Auto`、`OpenAI` 或 `Anthropic`；`Auto` 按 OpenAI → Anthropic 尝试已完整配置的格式 |
+| `GOOGLE_TRANSLATE_API_KEY` | Google Cloud Translation Basic v2 API Key |
+| `GOOGLE_TRANSLATE_BASE_URL` | Google 翻译端点；通常保留模板默认值 |
+| `OPENAI_API_KEY` | OpenAI 或兼容网关的 API Key |
+| `OPENAI_BASE_URL` | OpenAI-compatible API 根地址（如 `https://api.openai.com/v1`）；不要包含最终 `/chat/completions`、查询串或凭据 |
+| `OPENAI_MODEL` | Chat Completions 使用的模型名；与 Key 一样为必填项 |
+| `OPENAI_ORG_ID`、`OPENAI_PROJECT_ID` | 可选的 OpenAI 组织和项目头 |
+| `ANTHROPIC_API_KEY` | Anthropic 或兼容网关的 API Key |
+| `ANTHROPIC_BASE_URL` | Anthropic-compatible API 根地址（如 `https://api.anthropic.com/v1`）；不要包含最终 `/messages`、查询串或凭据 |
+| `ANTHROPIC_MODEL` | Messages API 使用的模型名；与 Key 一样为必填项 |
+| `ANTHROPIC_VERSION` | Anthropic API 版本头，模板默认 `2023-06-01` |
+| `ANTHROPIC_MAX_TOKENS` | 单次 AI 译文的最大输出 Token，模板默认 `4096` |
+| `AI_TRANSLATION_PROMPT_FILE` | 可选的 UTF-8 自定义系统 Prompt；相对路径以 `.env` 所在目录为准 |
+
+内置 AI Prompt 以“信”为最高优先级，再追求“达”和“雅”：不得为了押韵或文采改变事实、否定关系、人物、时态、视角和语气；同时要求译文自然简洁，尽量保留意象、节奏、俚语和双关。它把歌词与专辑信息明确视为数据而不是指令，只接受严格 JSON，并要求返回与原文完全一致的逐行 ID、顺序和数量。脚本据此在本地恢复 LRC 时间戳和生成双语 SRT。需要自行调整翻译风格时，可通过 `AI_TRANSLATION_PROMPT_FILE` 覆盖内置 Prompt。
+
+机器翻译会把待翻译的歌词行发送给所选 Google、OpenAI-compatible 或 Anthropic-compatible 服务；AI 服务还会收到用于消歧的曲名、艺人和专辑名，Google 只接收歌词行。脚本不会向这些服务上传 BIN、FLAC、WAV 或任何音频内容。API 服务可能按请求或 Token 收费，具体价格、配额、数据保留与隐私规则由所使用的服务商决定，请在启用前自行确认。服务地址必须使用 HTTPS；仅 `localhost`/loopback 本机兼容服务可使用 HTTP，带凭据的请求不会自动跟随重定向。成功译文缓存在 `%LOCALAPPDATA%\BinToAudioWindows\Lyrics\Translation-v2`，缓存不包含 API Key，并绑定服务端点、API 格式/版本、模型、Prompt、歌曲上下文和原歌词；删除对应缓存可强制重新翻译。
+
 ## 自动 CI/CD
 
 仓库内置 GitHub Actions：
 
 - **CI**：Pull Request、推送到 `main` 或手动运行时，在 Ubuntu 24.04 检查 Bash 语法、ShellCheck 和 Linux 转换器离线 dry-run；在 Windows Server 2025 分别使用 PowerShell 7 与 Windows PowerShell 5.1 解析脚本、运行离线 smoke test，并执行关键 PSScriptAnalyzer 规则。
-- **CD**：推送指向 `main` 历史的 SemVer 标签（例如 `v2.6.0`）后，先复用完整 CI，再自动生成 Windows ZIP、Linux tar.gz 和 `SHA256SUMS.txt`，最后发布或更新对应 GitHub Release。
+- **CD**：推送指向 `main` 历史的 SemVer 标签（例如 `v2.7.0`）后，先复用完整 CI，再自动生成 Windows ZIP、Linux tar.gz 和 `SHA256SUMS.txt`，最后发布或更新对应 GitHub Release。Windows ZIP 会附带安全的 `.env.example` 配置模板。
 - GitHub Actions 依赖固定到完整提交 SHA，并由 Dependabot 每周检查更新；CI 只拥有仓库读取权限，只有发布作业拥有 `contents: write`。
 
 发布新版本：
@@ -253,11 +325,11 @@ MusicBrainz 要求客户端不超过每秒一次请求。脚本会在所有 Musi
 ```bash
 git switch main
 git pull --ff-only
-git tag v2.6.0
-git push origin v2.6.0
+git tag v2.7.0
+git push origin v2.7.0
 ```
 
-发布归档只包含脚本和 README，不包含 BIN、音频、缓存、歌词或本地生成的元数据。
+发布归档只包含对应平台的脚本、README，以及 Windows 包中的空白 `.env.example` 模板；绝不包含真实 `.env`、API Key、BIN、音频、缓存、歌词或本地生成的元数据。
 
 ## 本地歌词命名
 
@@ -350,6 +422,7 @@ sha256sum --check SHA256SUMS
 - 逐轨国内匹配仍要求候选属于同名专辑；国内平台只把附赠曲收录在另一张专辑时会保留 MusicBrainz 标签并继续使用后续歌词源，这是有意的防误配策略。
 - CD 音频本身通常不包含可搜索的专辑名，因此 MusicBrainz 仍承担首要 Disc ID/TOC 身份识别。若 MusicBrainz 完全没有该光盘，脚本只会采用同目录已有 JSON、TOC CD-TEXT 或结构明确的目录名作为提示；国内候选未通过整专轨数和时长校验时仍降级为基础轨号，不会仅凭名字猜专辑。
 - 在线查询会向元数据服务发送 Disc ID、专辑/歌曲名称和时长，不会上传音频内容。
+- 只有显式配置并启用翻译回退后，歌词原文才会发送给所选 Google 或 AI API；曲名/艺人/专辑上下文只发送给 AI API 用于消歧。音频文件始终只在本地处理。API 可能产生费用，并受对应服务商的隐私和数据保留政策约束。
 - 网易云音乐接口不是稳定的公开开发者 API，若服务端以后改变响应格式，脚本会安全回退到 MusicBrainz 标题，不会阻止音频转换。
 - 请仅归档和转换你有权处理的光盘与歌词。
 
@@ -363,8 +436,10 @@ sha256sum --check SHA256SUMS
 - [Deezer](https://developers.deezer.com/api)：高置信度封面回退
 - [Wikidata](https://www.wikidata.org/) / [Wikimedia Commons](https://commons.wikimedia.org/)：发行日期、流派及 P18 封面回退
 - [LRCLIB](https://lrclib.net/)：同步及纯文本歌词
+- [Google Cloud Translation Basic v2](https://cloud.google.com/translate/docs/reference/rest/v2/translate)：无平台中文翻译时的可选机器翻译回退
+- [OpenAI Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create) / [Anthropic Messages](https://platform.claude.com/docs/en/api/messages/create)：无平台中文翻译时的可选 AI 翻译回退，也支持遵循相同请求格式的兼容服务
 - [musicbrainz.eu](https://musicbrainz.eu/)：MusicBrainz 查询镜像
 
 ## 安全说明
 
-仓库不包含服务器地址、账号、密码、API Token、光盘镜像、缓存或用户媒体文件。运行前请检查输出目录权限，并妥善保存生成的 BIN 文件。
+仓库不包含服务器地址、账号、密码、API Token、光盘镜像、缓存或用户媒体文件。`.env.example` 只有空白占位符；真实 `.env` 已被忽略且不会打入发布包。运行前请检查输出目录权限，妥善保存生成的 BIN 文件和 API Key。

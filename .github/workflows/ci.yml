@@ -26,6 +26,19 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Verify environment-file safety
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git ls-files | grep -E '(^|/)\.env($|\.)' | grep -Ev '(^|/)\.env\.example$'; then
+            echo 'A real environment file is tracked by Git.' >&2
+            exit 1
+          fi
+          if grep -Eq '^(GOOGLE_TRANSLATE_API_KEY|OPENAI_API_KEY|ANTHROPIC_API_KEY)=.+' .env.example; then
+            echo '.env.example must not contain API keys.' >&2
+            exit 1
+          fi
+
       - name: Install pinned ShellCheck
         shell: bash
         run: |
@@ -115,6 +128,12 @@ jobs:
               throw ($messages -join [Environment]::NewLine)
           }
 
+      - name: Run lyrics translation offline tests with PowerShell 7
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & '.\tests\lyrics_translation_fallback.Tests.ps1'
+
       - name: Parse and smoke test with Windows PowerShell 5.1
         shell: powershell
         run: |
@@ -171,6 +190,8 @@ jobs:
           if (-not (Test-Path -LiteralPath (Join-Path $output 'track-01.flac'))) {
               throw 'Windows PowerShell smoke test did not create the expected output track.'
           }
+
+          & '.\tests\lyrics_translation_fallback.Tests.ps1'
 
       - name: Run critical PSScriptAnalyzer rules
         shell: pwsh

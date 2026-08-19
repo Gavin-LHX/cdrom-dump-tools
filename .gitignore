@@ -4,6 +4,8 @@
 *.wav
 *.lrc
 *.partial.*
+.env*
+!.env.example
 .metadata-cache/
 dist/
 cover.jpg

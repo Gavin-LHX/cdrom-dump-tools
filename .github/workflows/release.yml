@@ -38,7 +38,7 @@ jobs:
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
           if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-            printf 'Tag must be a SemVer-like value such as v2.6.0: %s\n' "$tag" >&2
+            printf 'Tag must be a SemVer-like value such as v2.7.0: %s\n' "$tag" >&2
             exit 1
           fi
           git fetch --no-tags origin main
@@ -66,7 +66,7 @@ jobs:
           source_date_epoch="$(git show -s --format=%ct "$GITHUB_SHA")"
 
           mkdir -p "dist/windows/$package" "dist/linux/$package"
-          install -m 0644 README.md bin_to_audio_windows.ps1 bin_to_audio_windows.cmd "dist/windows/$package/"
+          install -m 0644 README.md .env.example bin_to_audio_windows.ps1 bin_to_audio_windows.cmd "dist/windows/$package/"
           install -m 0644 README.md "dist/linux/$package/"
           install -m 0755 dump_cdrom.sh bin_to_audio.sh "dist/linux/$package/"
           find "dist/windows/$package" "dist/linux/$package" -exec touch -d "@$source_date_epoch" {} +
