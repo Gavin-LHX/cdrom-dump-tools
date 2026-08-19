@@ -15,3 +15,9 @@ musicbrainz-metadata.json
 lyrics-metadata.json
 SHA256SUMS
 SHA256SUMS.txt
+
+# C# GUI build artifacts
+bin/
+obj/
+*.user
+.vs/
