@@ -110,7 +110,6 @@ fi
 declare -a start_specs=()
 declare -a length_specs=()
 declare -a isrc_values=()
-declare -a toc_file_refs=()
 track_count=0
 current_track=0
 
@@ -138,7 +137,6 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     ((current_track > 0)) || die "TOC has FILE data before the first TRACK"
     [[ -z "${start_specs[$current_track]+x}" ]] ||
       die "track $current_track uses multiple source segments, which is not supported"
-    toc_file_refs[$current_track]="${BASH_REMATCH[2]}"
     start_specs[$current_track]="${BASH_REMATCH[3]}"
     length_specs[$current_track]="${BASH_REMATCH[5]:-}"
   fi
@@ -211,7 +209,6 @@ output_parent="$(realpath -e -- "$output_parent")"
 OUTPUT_DIR="$output_parent/$output_base"
 
 WORK_DIR="$(mktemp -d --tmpdir="$output_parent" ".${output_base}.partial.XXXXXX")"
-current_temp=""
 
 cleanup() {
   if [[ -n "$WORK_DIR" && -d "$WORK_DIR" ]]; then

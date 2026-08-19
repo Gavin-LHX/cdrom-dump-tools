@@ -240,6 +240,25 @@ MusicBrainz 要求客户端不超过每秒一次请求。脚本会在所有 Musi
 -MusicBrainzUserAgent 'MyCdRipper/1.0 (contact@example.com)'
 ```
 
+## 自动 CI/CD
+
+仓库内置 GitHub Actions：
+
+- **CI**：Pull Request、推送到 `main` 或手动运行时，在 Ubuntu 24.04 检查 Bash 语法、ShellCheck 和 Linux 转换器离线 dry-run；在 Windows Server 2025 分别使用 PowerShell 7 与 Windows PowerShell 5.1 解析脚本、运行离线 smoke test，并执行关键 PSScriptAnalyzer 规则。
+- **CD**：推送指向 `main` 历史的 SemVer 标签（例如 `v2.6.0`）后，先复用完整 CI，再自动生成 Windows ZIP、Linux tar.gz 和 `SHA256SUMS.txt`，最后发布或更新对应 GitHub Release。
+- GitHub Actions 依赖固定到完整提交 SHA，并由 Dependabot 每周检查更新；CI 只拥有仓库读取权限，只有发布作业拥有 `contents: write`。
+
+发布新版本：
+
+```bash
+git switch main
+git pull --ff-only
+git tag v2.6.0
+git push origin v2.6.0
+```
+
+发布归档只包含脚本和 README，不包含 BIN、音频、缓存、歌词或本地生成的元数据。
+
 ## 本地歌词命名
 
 Windows 转换器会先在 BIN 所在目录和 `lyrics` 子目录中查找歌词。以下名称均可识别：
