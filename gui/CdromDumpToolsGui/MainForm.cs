@@ -1,630 +1,492 @@
 using System.Diagnostics;
-using System.Text;
+using CdromDumpToolsGui.Core;
 
 namespace CdromDumpToolsGui;
 
-/// <summary>
-/// A Windows Forms wrapper around bin_to_audio_windows.ps1. The PowerShell
-/// converter remains the single source of truth for conversion logic; this
-/// GUI only collects options, streams the script's output into a log pane,
-/// and exposes a cancel button and an "open output folder" shortcut.
-/// </summary>
 internal sealed class MainForm : Form
 {
-    private readonly AppSettings _settings = AppSettings.Load();
+    private static readonly Color AccentColor = Color.FromArgb(34, 122, 214);
 
-    private TextBox _binTextBox = null!;
-    private TextBox _tocTextBox = null!;
-    private TextBox _outputTextBox = null!;
-    private TextBox _ffmpegTextBox = null!;
-    private TextBox _envTextBox = null!;
-    private TextBox _userAgentTextBox = null!;
-    private ComboBox _formatCombo = null!;
-    private ComboBox _domesticPriorityCombo = null!;
-    private ComboBox _lyricsFallbackCombo = null!;
-    private ComboBox _aiProviderCombo = null!;
-    private NumericUpDown _releaseIndexInput = null!;
-    private CheckBox _noMetadataCheck = null!;
-    private CheckBox _noCoverCheck = null!;
-    private CheckBox _noLyricsCheck = null!;
-    private CheckBox _noNetEaseCheck = null!;
-    private CheckBox _noQQMusicCheck = null!;
-    private RichTextBox _log = null!;
-    private Button _runButton = null!;
-    private Button _cancelButton = null!;
-    private Button _openOutputButton = null!;
-    private ToolStripStatusLabel _statusLabel = null!;
+    private readonly AppSettings _settings;
     private readonly ToolTip _toolTip = new();
+    private readonly TextBox _binTextBox = NewPathTextBox("把 .bin 文件拖到窗口，或点击浏览");
+    private readonly TextBox _tocTextBox = NewPathTextBox("可选；留空时脚本查找同名 .toc");
+    private readonly TextBox _outputTextBox = NewPathTextBox("留空时按识别出的专辑自动命名");
+    private readonly TextBox _ffmpegTextBox = NewPathTextBox("可选；留空时自动查找 ffmpeg.exe");
+    private readonly TextBox _envTextBox = NewPathTextBox("可选；只保存路径，不读取或保存 API Key");
+    private readonly TextBox _userAgentTextBox = new() { Dock = DockStyle.Fill, PlaceholderText = ConversionOptions.DefaultMusicBrainzUserAgent };
+    private readonly ComboBox _formatComboBox = NewChoiceCombo("flac", "wav");
+    private readonly ComboBox _domesticPriorityComboBox = NewChoiceCombo("NetEaseFirst", "QQMusicFirst");
+    private readonly ComboBox _lyricsFallbackComboBox = NewChoiceCombo("Auto", "None", "AIThenGoogle", "GoogleThenAI", "AI", "Google");
+    private readonly ComboBox _aiProviderComboBox = NewChoiceCombo("Auto", "OpenAI", "Anthropic");
+    private readonly NumericUpDown _releaseIndexInput = new() { Minimum = 0, Maximum = 1000, Dock = DockStyle.Fill };
+    private readonly CheckBox _noMetadataCheckBox = NewCheckBox("不联网写元数据");
+    private readonly CheckBox _noCoverCheckBox = NewCheckBox("不下载封面");
+    private readonly CheckBox _noLyricsCheckBox = NewCheckBox("不下载歌词");
+    private readonly CheckBox _noNetEaseCheckBox = NewCheckBox("禁用网易云");
+    private readonly CheckBox _noQQMusicCheckBox = NewCheckBox("禁用 QQ 音乐");
+    private readonly CheckBox _noPauseCheckBox = NewCheckBox("脚本不等待按键");
+    private readonly CheckBox _openOnSuccessCheckBox = NewCheckBox("成功后打开目录");
+    private readonly RichTextBox _logTextBox = new()
+    {
+        Dock = DockStyle.Fill,
+        ReadOnly = true,
+        DetectUrls = true,
+        BackColor = Color.FromArgb(24, 26, 29),
+        ForeColor = Color.Gainsboro,
+        Font = new Font("Cascadia Mono", 9F),
+        BorderStyle = BorderStyle.FixedSingle,
+    };
+    private readonly TextBox _previewTextBox = new()
+    {
+        Dock = DockStyle.Fill,
+        ReadOnly = true,
+        Multiline = true,
+        ScrollBars = ScrollBars.Horizontal,
+        WordWrap = false,
+        Height = 50,
+        BackColor = SystemColors.ControlLightLight,
+    };
+    private readonly Button _runButton = new() { Text = "开始转换", AutoSize = true, Padding = new Padding(14, 5, 14, 5) };
+    private readonly Button _cancelButton = new() { Text = "取消", AutoSize = true, Padding = new Padding(12, 5, 12, 5), Enabled = false };
+    private readonly Button _openOutputButton = new() { Text = "打开输出目录", AutoSize = true, Padding = new Padding(12, 5, 12, 5), Enabled = false };
+    private readonly ToolStripStatusLabel _statusLabel = new() { Text = "就绪" };
 
     private Process? _process;
     private bool _running;
-    private string? _outputFolder;
+    private bool _cancellationRequested;
+    private bool _closeWhenStopped;
+    private bool _allowClose;
+    private string? _reportedOutputDirectory;
+    private string? _lastOutputDirectory;
 
     public MainForm()
     {
-        Text = "CD-ROM Dump Tools GUI";
+        _settings = AppSettingsStore.Load();
+
+        Text = "CD-ROM Dump Tools";
         Font = new Font("Microsoft YaHei UI", 9F);
-        MinimumSize = new Size(760, 620);
         StartPosition = FormStartPosition.CenterScreen;
+        MinimumSize = new Size(900, 720);
+        ClientSize = new Size(1150, 900);
+        AutoScaleMode = AutoScaleMode.Dpi;
         AllowDrop = true;
 
-        BuildUi();
-        LoadSettingsIntoUi();
+        BuildInterface();
+        LoadSettingsIntoControls();
+        _noPauseCheckBox.Checked = true;
+        _noPauseCheckBox.Enabled = false;
+        WireEvents();
+        UpdateCommandPreview();
     }
 
-    private void BuildUi()
+    private void BuildInterface()
     {
-        // ----- settings panel -----
-        var settingsGroup = new GroupBox { Text = "转换设置", Dock = DockStyle.Fill, Padding = new Padding(10) };
-        var settingsTable = new TableLayoutPanel
-        {
-            ColumnCount = 4,
-            Dock = DockStyle.Top,
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            ColumnStyles =
-            {
-                new ColumnStyle(SizeType.Absolute, 96),
-                new ColumnStyle(SizeType.Percent, 100F),
-                new ColumnStyle(SizeType.Absolute, 84),
-                new ColumnStyle(SizeType.Absolute, 12),
-            },
-        };
-
-        _binTextBox = AddPathRow(settingsTable, 0, "BIN 镜像", "选择 BIN 文件",
-            "BIN 文件 (*.bin)|*.bin|所有文件 (*.*)|*.*", BrowseForFile);
-        _tocTextBox = AddPathRow(settingsTable, 1, "TOC 文件", "选择 cdrdao TOC 文件(可选,默认与 BIN 同名)",
-            "TOC 文件 (*.toc)|*.toc|所有文件 (*.*)|*.*", BrowseForFile);
-        _outputTextBox = AddPathRow(settingsTable, 2, "输出目录", "选择输出目录(可选,默认 BIN 旁生成)",
-            null, BrowseForFolder);
-        _ffmpegTextBox = AddPathRow(settingsTable, 3, "FFmpeg", "选择 ffmpeg.exe(可选,自动从 PATH 查找)",
-            "ffmpeg.exe|ffmpeg.exe|所有文件 (*.*)|*.*", BrowseForFile);
-        _envTextBox = AddPathRow(settingsTable, 4, ".env 文件", "选择 .env(可选,默认读取脚本旁的 .env)",
-            "env 文件|*.env;*.example|所有文件 (*.*)|*.*", BrowseForFile);
-
-        var optionsPanel = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Top,
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            Padding = new Padding(0, 6, 0, 0),
-        };
-
-        _formatCombo = AddOptionCombo(optionsPanel, "输出格式", "flac", "wav");
-        _domesticPriorityCombo = AddOptionCombo(optionsPanel, "国内源优先", "NetEaseFirst", "QQMusicFirst");
-        _lyricsFallbackCombo = AddOptionCombo(optionsPanel, "歌词翻译回退", "Auto", "None", "Google", "AI", "GoogleThenAI", "AIThenGoogle");
-        _aiProviderCombo = AddOptionCombo(optionsPanel, "AI 提供方", "Auto", "OpenAI", "Anthropic");
-
-        optionsPanel.Controls.Add(new Label { Text = "ReleaseIndex", AutoSize = true, Margin = new Padding(12, 6, 2, 0) });
-        _releaseIndexInput = new NumericUpDown
-        {
-            Width = 64,
-            Minimum = 0,
-            Maximum = 1000,
-            Margin = new Padding(0, 3, 12, 0),
-        };
-        optionsPanel.Controls.Add(_releaseIndexInput);
-
-        _noMetadataCheck = AddOptionCheck(optionsPanel, "禁用在线元数据");
-        _noCoverCheck = AddOptionCheck(optionsPanel, "不下载封面");
-        _noLyricsCheck = AddOptionCheck(optionsPanel, "不获取歌词");
-        _noNetEaseCheck = AddOptionCheck(optionsPanel, "不用网易云");
-        _noQQMusicCheck = AddOptionCheck(optionsPanel, "不用 QQ 音乐");
-
-        _userAgentTextBox = new TextBox
-        {
-            Dock = DockStyle.Fill,
-            Margin = new Padding(0, 3, 0, 0),
-        };
-        var userAgentRow = new TableLayoutPanel
-        {
-            ColumnCount = 2,
-            Dock = DockStyle.Top,
-            AutoSize = true,
-            ColumnStyles =
-            {
-                new ColumnStyle(SizeType.Absolute, 96),
-                new ColumnStyle(SizeType.Percent, 100F),
-            },
-        };
-        userAgentRow.Controls.Add(new Label { Text = "User-Agent", AutoSize = true, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
-        userAgentRow.Controls.Add(_userAgentTextBox, 1, 0);
-
-        settingsGroup.Controls.Add(settingsTable);
-        settingsGroup.Controls.Add(optionsPanel);
-        settingsGroup.Controls.Add(userAgentRow);
-
-        // ----- log panel -----
-        var logGroup = new GroupBox { Text = "日志", Dock = DockStyle.Fill, Padding = new Padding(10) };
-        _log = new RichTextBox
-        {
-            Dock = DockStyle.Fill,
-            ReadOnly = true,
-            BackColor = Color.White,
-            Font = new Font("Consolas", 9.5F),
-            DetectUrls = false,
-            WordWrap = false,
-            ScrollBars = RichTextBoxScrollBars.Both,
-        };
-        logGroup.Controls.Add(_log);
-
-        // ----- bottom buttons -----
-        var buttonPanel = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Top,
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            Padding = new Padding(0, 6, 0, 0),
-        };
-        _runButton = new Button { Text = "开始转换", Width = 110, Height = 30, AutoSize = false };
-        _runButton.Click += (_, _) => StartConversion();
-        _cancelButton = new Button { Text = "取消", Width = 90, Height = 30, Enabled = false, AutoSize = false };
-        _cancelButton.Click += (_, _) => CancelConversion();
-        _openOutputButton = new Button { Text = "打开输出文件夹", Width = 130, Height = 30, Enabled = false, AutoSize = false };
-        _openOutputButton.Click += (_, _) => OpenOutputFolder();
-        buttonPanel.Controls.Add(_runButton);
-        buttonPanel.Controls.Add(_cancelButton);
-        buttonPanel.Controls.Add(_openOutputButton);
-
-        // ----- status strip -----
-        var statusStrip = new StatusStrip();
-        _statusLabel = new ToolStripStatusLabel { Text = "就绪" };
-        statusStrip.Items.Add(_statusLabel);
-
-        // ----- main layout -----
         var root = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            RowCount = 4,
             ColumnCount = 1,
-            Padding = new Padding(10),
-            RowStyles =
-            {
-                new RowStyle(SizeType.AutoSize),
-                new RowStyle(SizeType.AutoSize),
-                new RowStyle(SizeType.Percent, 100F),
-                new RowStyle(SizeType.AutoSize),
-            },
+            RowCount = 4,
+            Padding = new Padding(12),
         };
-        root.Controls.Add(settingsGroup, 0, 0);
-        root.Controls.Add(buttonPanel, 0, 1);
-        root.Controls.Add(logGroup, 0, 2);
-        root.Controls.Add(statusStrip, 0, 3);
-        Controls.Add(root);
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-        // ----- drag & drop -----
-        AllowDrop = true;
-        settingsGroup.AllowDrop = true;
-        DragEnter += OnFormDragEnter;
-        DragDrop += OnFormDragDrop;
-        settingsGroup.DragEnter += OnFormDragEnter;
-        settingsGroup.DragDrop += OnFormDragDrop;
-    }
-
-    private TextBox AddPathRow(TableLayoutPanel table, int row, string label, string placeholder,
-        string? filter, Action<TextBox> browseAction)
-    {
-        table.RowCount = Math.Max(table.RowCount, row + 1);
-        table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-
-        var textBox = new TextBox { Dock = DockStyle.Fill, Margin = new Padding(0, 3, 6, 0) };
-        if (!string.IsNullOrEmpty(placeholder))
+        var inputGroup = new GroupBox
         {
-            textBox.Tag = placeholder;
-            textBox.Enter += (_, _) =>
-            {
-                if (string.Equals(textBox.Text, textBox.Tag as string, StringComparison.Ordinal))
-                {
-                    textBox.Text = "";
-                }
-            };
-            textBox.Leave += (_, _) =>
-            {
-                if (string.IsNullOrWhiteSpace(textBox.Text))
-                {
-                    textBox.Text = textBox.Tag as string ?? "";
-                }
-            };
-            textBox.Text = placeholder;
-        }
-        table.Controls.Add(new Label { Text = label, AutoSize = true, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(0, 3, 0, 0) }, 0, row);
-        table.Controls.Add(textBox, 1, row);
-
-        var browseButton = new Button
-        {
-            Text = "浏览...",
-            Width = 74,
-            Height = 26,
-            Margin = new Padding(0, 2, 0, 0),
-            Tag = (textBox, filter, browseAction),
-        };
-        browseButton.Click += (_, _) =>
-        {
-            var (target, fileFilter, action) = ((TextBox, string?, Action<TextBox>))browseButton.Tag!;
-            action(target);
-        };
-        table.Controls.Add(browseButton, 2, row);
-        return textBox;
-    }
-
-    private void BrowseForFile(TextBox target)
-    {
-        using var dialog = new OpenFileDialog
-        {
-            Filter = (string?)target.Tag is { Length: > 0 } f ? f : "所有文件 (*.*)|*.*",
-            CheckFileExists = true,
-        };
-        if (dialog.ShowDialog(this) == DialogResult.OK)
-        {
-            target.Text = dialog.FileName;
-            target.Tag = null;
-        }
-    }
-
-    private void BrowseForFolder(TextBox target)
-    {
-        using var dialog = new FolderBrowserDialog { Description = "选择输出目录" };
-        if (dialog.ShowDialog(this) == DialogResult.OK)
-        {
-            target.Text = dialog.SelectedPath;
-            target.Tag = null;
-        }
-    }
-
-    private static ComboBox AddOptionCombo(FlowLayoutPanel panel, string label, params string[] items)
-    {
-        panel.Controls.Add(new Label { Text = label, AutoSize = true, Margin = new Padding(0, 6, 2, 0) });
-        var combo = new ComboBox
-        {
-            DropDownStyle = ComboBoxStyle.DropDownList,
-            Width = 130,
-            Margin = new Padding(0, 3, 12, 0),
-        };
-        combo.Items.AddRange(items);
-        combo.SelectedIndex = 0;
-        panel.Controls.Add(combo);
-        return combo;
-    }
-
-    private static CheckBox AddOptionCheck(FlowLayoutPanel panel, string text)
-    {
-        var check = new CheckBox
-        {
-            Text = text,
+            Text = "输入与输出",
+            Dock = DockStyle.Top,
             AutoSize = true,
-            Margin = new Padding(0, 6, 12, 0),
+            Padding = new Padding(10, 8, 10, 10),
         };
-        panel.Controls.Add(check);
-        return check;
+        var paths = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            ColumnCount = 4,
+            RowCount = 5,
+        };
+        paths.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 105));
+        paths.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        paths.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        paths.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+
+        AddPathRow(paths, 0, "BIN 镜像", _binTextBox, BrowseBin);
+        AddPathRow(paths, 1, "TOC 文件", _tocTextBox, BrowseToc, () => _tocTextBox.Clear());
+        AddPathRow(paths, 2, "最终输出目录", _outputTextBox, BrowseOutputParent, () => _outputTextBox.Clear(), "选择父目录后会生成一个尚不存在的最终目录；留空则由脚本按专辑自动命名。");
+        AddPathRow(paths, 3, "FFmpeg", _ffmpegTextBox, BrowseFfmpeg, () => _ffmpegTextBox.Clear());
+        AddPathRow(paths, 4, ".env 文件", _envTextBox, BrowseEnvironmentFile, () => _envTextBox.Clear(), "仅把文件路径传给脚本；GUI 不读取、显示或保存其中的 API Key。");
+        inputGroup.Controls.Add(paths);
+
+        var optionsGroup = new GroupBox
+        {
+            Text = "元数据、歌词与转换选项",
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            Padding = new Padding(10, 8, 10, 10),
+            Margin = new Padding(0, 10, 0, 8),
+        };
+        var options = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            ColumnCount = 4,
+            RowCount = 5,
+        };
+        options.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 128));
+        options.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+        options.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
+        options.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+
+        AddLabeledControl(options, 0, 0, "输出格式", _formatComboBox);
+        AddLabeledControl(options, 0, 2, "国内源优先级", _domesticPriorityComboBox);
+        AddLabeledControl(options, 1, 0, "歌词翻译回退", _lyricsFallbackComboBox);
+        AddLabeledControl(options, 1, 2, "AI 翻译服务", _aiProviderComboBox);
+        AddLabeledControl(options, 2, 0, "候选专辑序号", _releaseIndexInput);
+        AddLabeledControl(options, 2, 2, "MusicBrainz UA", _userAgentTextBox);
+
+        var switches = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            WrapContents = true,
+            Margin = new Padding(0, 7, 0, 0),
+        };
+        switches.Controls.AddRange(new Control[]
+        {
+            _noMetadataCheckBox,
+            _noCoverCheckBox,
+            _noLyricsCheckBox,
+            _noNetEaseCheckBox,
+            _noQQMusicCheckBox,
+            _noPauseCheckBox,
+            _openOnSuccessCheckBox,
+        });
+        options.Controls.Add(switches, 0, 3);
+        options.SetColumnSpan(switches, 4);
+
+        var hint = new Label
+        {
+            AutoSize = true,
+            ForeColor = SystemColors.GrayText,
+            Text = "识别光盘优先 MusicBrainz；写标签与歌词按脚本当前的多源优先级执行。GUI 中 ReleaseIndex 为 0 时使用第 1 个候选。",
+            Margin = new Padding(3, 8, 3, 0),
+        };
+        options.Controls.Add(hint, 0, 4);
+        options.SetColumnSpan(hint, 4);
+        optionsGroup.Controls.Add(options);
+
+        var middle = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
+        middle.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+        middle.RowStyles.Add(new RowStyle(SizeType.Absolute, 82F));
+        var logGroup = new GroupBox { Text = "实时日志", Dock = DockStyle.Fill, Padding = new Padding(8) };
+        logGroup.Controls.Add(_logTextBox);
+        middle.Controls.Add(logGroup, 0, 0);
+
+        var previewGroup = new GroupBox
+        {
+            Text = "命令预览（不会读取或显示 .env 内的 API Key）",
+            Dock = DockStyle.Fill,
+            Padding = new Padding(8),
+            Margin = new Padding(0, 8, 0, 0),
+        };
+        previewGroup.Controls.Add(_previewTextBox);
+        middle.Controls.Add(previewGroup, 0, 1);
+
+        var actionPanel = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            FlowDirection = FlowDirection.LeftToRight,
+            Padding = new Padding(0, 8, 0, 0),
+        };
+        _runButton.BackColor = AccentColor;
+        _runButton.ForeColor = Color.White;
+        _runButton.FlatStyle = FlatStyle.Flat;
+        actionPanel.Controls.AddRange(new Control[] { _runButton, _cancelButton, _openOutputButton });
+
+        root.Controls.Add(inputGroup, 0, 0);
+        root.Controls.Add(optionsGroup, 0, 1);
+        root.Controls.Add(middle, 0, 2);
+        root.Controls.Add(actionPanel, 0, 3);
+
+        var statusStrip = new StatusStrip();
+        statusStrip.Items.Add(_statusLabel);
+        Controls.Add(root);
+        Controls.Add(statusStrip);
     }
 
-    // ----- settings persistence -----
-
-    private void LoadSettingsIntoUi()
+    private void WireEvents()
     {
-        if (!string.IsNullOrWhiteSpace(_settings.BinPath))
+        DragEnter += HandleDragEnter;
+        DragDrop += HandleDragDrop;
+        FormClosing += HandleFormClosing;
+        _runButton.Click += async (_, _) => await RunConversionAsync();
+        _cancelButton.Click += (_, _) => CancelConversion();
+        _openOutputButton.Click += (_, _) => OpenDirectorySafely(_lastOutputDirectory);
+
+        foreach (var textBox in new[] { _binTextBox, _tocTextBox, _outputTextBox, _ffmpegTextBox, _envTextBox, _userAgentTextBox })
         {
-            _binTextBox.Text = _settings.BinPath;
-            _binTextBox.Tag = null;
+            textBox.TextChanged += (_, _) => UpdateCommandPreview();
         }
-        if (!string.IsNullOrWhiteSpace(_settings.TocPath))
+        foreach (var comboBox in new[] { _formatComboBox, _domesticPriorityComboBox, _lyricsFallbackComboBox, _aiProviderComboBox })
         {
-            _tocTextBox.Text = _settings.TocPath;
-            _tocTextBox.Tag = null;
+            comboBox.SelectedIndexChanged += (_, _) => UpdateCommandPreview();
         }
-        if (!string.IsNullOrWhiteSpace(_settings.OutputDirectory))
+        _releaseIndexInput.ValueChanged += (_, _) => UpdateCommandPreview();
+        foreach (var checkBox in new[]
+                 {
+                     _noMetadataCheckBox, _noCoverCheckBox, _noLyricsCheckBox, _noNetEaseCheckBox,
+                     _noQQMusicCheckBox, _noPauseCheckBox,
+                 })
         {
-            _outputTextBox.Text = _settings.OutputDirectory;
-            _outputTextBox.Tag = null;
+            checkBox.CheckedChanged += (_, _) => UpdateCommandPreview();
         }
-        if (!string.IsNullOrWhiteSpace(_settings.FfmpegPath))
-        {
-            _ffmpegTextBox.Text = _settings.FfmpegPath;
-            _ffmpegTextBox.Tag = null;
-        }
-        if (!string.IsNullOrWhiteSpace(_settings.EnvPath))
-        {
-            _envTextBox.Text = _settings.EnvPath;
-            _envTextBox.Tag = null;
-        }
-        SelectCombo(_formatCombo, _settings.Format);
-        SelectCombo(_domesticPriorityCombo, _settings.DomesticSourcePriority);
-        SelectCombo(_lyricsFallbackCombo, _settings.LyricsTranslationFallback);
-        SelectCombo(_aiProviderCombo, _settings.AiTranslationProvider);
+
+        _toolTip.SetToolTip(_releaseIndexInput, "0 表示非交互地使用第 1 个候选；1..1000 指定候选序号。");
+        _toolTip.SetToolTip(_envTextBox, "GUI 只保存此路径，不会把 API Key 写入设置或命令预览。");
+        _toolTip.SetToolTip(_noPauseCheckBox, "GUI 始终传入 -NoPause，防止后台进程等待键盘输入。");
+    }
+
+    private void LoadSettingsIntoControls()
+    {
+        _binTextBox.Text = _settings.BinPath;
+        _tocTextBox.Text = _settings.TocPath;
+        // A final output directory is single-use: after a successful conversion it exists
+        // and cannot be passed to the converter again, so never restore a stale value.
+        _outputTextBox.Clear();
+        _ffmpegTextBox.Text = _settings.FfmpegPath;
+        _envTextBox.Text = _settings.EnvPath;
+        SelectOrDefault(_formatComboBox, _settings.Format, "flac");
+        SelectOrDefault(_domesticPriorityComboBox, _settings.DomesticSourcePriority, "NetEaseFirst");
+        SelectOrDefault(_lyricsFallbackComboBox, _settings.LyricsTranslationFallback, "Auto");
+        SelectOrDefault(_aiProviderComboBox, _settings.AiTranslationProvider, "Auto");
         _releaseIndexInput.Value = Math.Clamp(_settings.ReleaseIndex, 0, 1000);
-        _noMetadataCheck.Checked = _settings.NoMetadata;
-        _noCoverCheck.Checked = _settings.NoCover;
-        _noLyricsCheck.Checked = _settings.NoLyrics;
-        _noNetEaseCheck.Checked = _settings.NoNetEase;
-        _noQQMusicCheck.Checked = _settings.NoQQMusic;
-        _userAgentTextBox.Text = _settings.MusicBrainzUserAgent ?? "";
+        _noMetadataCheckBox.Checked = _settings.NoMetadata;
+        _noCoverCheckBox.Checked = _settings.NoCover;
+        _noLyricsCheckBox.Checked = _settings.NoLyrics;
+        _noNetEaseCheckBox.Checked = _settings.NoNetEase;
+        _noQQMusicCheckBox.Checked = _settings.NoQQMusic;
+        _noPauseCheckBox.Checked = true;
+        _openOnSuccessCheckBox.Checked = _settings.OpenOutputOnSuccess;
+        _userAgentTextBox.Text = string.IsNullOrWhiteSpace(_settings.MusicBrainzUserAgent)
+            ? ConversionOptions.DefaultMusicBrainzUserAgent
+            : _settings.MusicBrainzUserAgent;
     }
 
-    private void SaveSettingsFromUi()
+    private AppSettings CaptureSettings() => new()
     {
-        _settings.BinPath = GetRealText(_binTextBox);
-        _settings.TocPath = GetRealText(_tocTextBox);
-        _settings.OutputDirectory = GetRealText(_outputTextBox);
-        _settings.FfmpegPath = GetRealText(_ffmpegTextBox);
-        _settings.EnvPath = GetRealText(_envTextBox);
-        _settings.Format = (string)_formatCombo.SelectedItem!;
-        _settings.DomesticSourcePriority = (string)_domesticPriorityCombo.SelectedItem!;
-        _settings.LyricsTranslationFallback = (string)_lyricsFallbackCombo.SelectedItem!;
-        _settings.AiTranslationProvider = (string)_aiProviderCombo.SelectedItem!;
-        _settings.ReleaseIndex = (int)_releaseIndexInput.Value;
-        _settings.NoMetadata = _noMetadataCheck.Checked;
-        _settings.NoCover = _noCoverCheck.Checked;
-        _settings.NoLyrics = _noLyricsCheck.Checked;
-        _settings.NoNetEase = _noNetEaseCheck.Checked;
-        _settings.NoQQMusic = _noQQMusicCheck.Checked;
-        _settings.MusicBrainzUserAgent = _userAgentTextBox.Text.Trim();
-        _settings.Save();
-    }
+        BinPath = _binTextBox.Text.Trim(),
+        TocPath = _tocTextBox.Text.Trim(),
+        OutputDirectory = string.Empty,
+        FfmpegPath = _ffmpegTextBox.Text.Trim(),
+        EnvPath = _envTextBox.Text.Trim(),
+        Format = SelectedText(_formatComboBox, "flac"),
+        NoMetadata = _noMetadataCheckBox.Checked,
+        NoCover = _noCoverCheckBox.Checked,
+        NoLyrics = _noLyricsCheckBox.Checked,
+        NoNetEase = _noNetEaseCheckBox.Checked,
+        NoQQMusic = _noQQMusicCheckBox.Checked,
+        NoPause = true,
+        LyricsTranslationFallback = SelectedText(_lyricsFallbackComboBox, "Auto"),
+        AiTranslationProvider = SelectedText(_aiProviderComboBox, "Auto"),
+        DomesticSourcePriority = SelectedText(_domesticPriorityComboBox, "NetEaseFirst"),
+        ReleaseIndex = Decimal.ToInt32(_releaseIndexInput.Value),
+        MusicBrainzUserAgent = _userAgentTextBox.Text.Trim(),
+        OpenOutputOnSuccess = _openOnSuccessCheckBox.Checked,
+    };
 
-    private static void SelectCombo(ComboBox combo, string value)
+    private ConversionOptions CaptureConversionOptions()
     {
-        var index = combo.Items.IndexOf(value);
-        combo.SelectedIndex = index >= 0 ? index : 0;
-    }
-
-    private static string GetRealText(TextBox box) =>
-        box.Tag is string placeholder && string.Equals(box.Text, placeholder, StringComparison.Ordinal)
-            ? ""
-            : box.Text.Trim();
-
-    // ----- drag & drop -----
-
-    private static void OnFormDragEnter(object? sender, DragEventArgs e)
-    {
-        if (e.Data?.GetDataPresent(DataFormats.FileDrop) == true)
+        var settings = CaptureSettings();
+        return new ConversionOptions
         {
-            e.Effect = DragDropEffects.Copy;
-        }
+            BinPath = settings.BinPath,
+            TocPath = EmptyToNull(settings.TocPath),
+            OutputDirectory = EmptyToNull(settings.OutputDirectory),
+            FfmpegPath = EmptyToNull(settings.FfmpegPath),
+            EnvPath = EmptyToNull(settings.EnvPath),
+            Format = settings.Format,
+            NoMetadata = settings.NoMetadata,
+            NoCover = settings.NoCover,
+            NoLyrics = settings.NoLyrics,
+            NoNetEase = settings.NoNetEase,
+            NoQQMusic = settings.NoQQMusic,
+            NoPause = settings.NoPause,
+            LyricsTranslationFallback = settings.LyricsTranslationFallback,
+            AiTranslationProvider = settings.AiTranslationProvider,
+            DomesticSourcePriority = settings.DomesticSourcePriority,
+            ReleaseIndex = settings.ReleaseIndex,
+            MusicBrainzUserAgent = settings.MusicBrainzUserAgent,
+        };
     }
 
-    private void OnFormDragDrop(object? sender, DragEventArgs e)
+    private async Task RunConversionAsync()
     {
-        if (e.Data?.GetData(DataFormats.FileDrop) is not string[] files)
+        if (_running)
         {
             return;
         }
 
-        foreach (var file in files)
+        var scriptPath = ScriptLocator.FindConverterScript(AppContext.BaseDirectory);
+        var powerShellPath = PowerShellLocator.FindExecutable();
+        var options = CaptureConversionOptions();
+        if (!ValidateInputs(scriptPath, powerShellPath, options, out var validationError))
         {
-            var extension = Path.GetExtension(file).ToLowerInvariant();
-            if (extension == ".bin")
-            {
-                _binTextBox.Text = file;
-                _binTextBox.Tag = null;
-                var toc = Path.ChangeExtension(file, ".toc");
-                if (File.Exists(toc))
-                {
-                    _tocTextBox.Text = toc;
-                    _tocTextBox.Tag = null;
-                }
-                return;
-            }
-        }
-        foreach (var file in files)
-        {
-            if (Path.GetExtension(file).Equals(".toc", StringComparison.OrdinalIgnoreCase))
-            {
-                _tocTextBox.Text = file;
-                _tocTextBox.Tag = null;
-                var bin = Path.ChangeExtension(file, ".bin");
-                if (File.Exists(bin))
-                {
-                    _binTextBox.Text = bin;
-                    _binTextBox.Tag = null;
-                }
-                return;
-            }
-        }
-
-        MessageBox.Show(this, "请拖入 .bin 或 .toc 文件。", "CD-ROM Dump Tools GUI",
-            MessageBoxButtons.OK, MessageBoxIcon.Information);
-    }
-
-    // ----- conversion -----
-
-    private void StartConversion()
-    {
-        var binPath = GetRealText(_binTextBox);
-        if (string.IsNullOrWhiteSpace(binPath))
-        {
-            MessageBox.Show(this, "请先选择 BIN 镜像文件。", "缺少输入",
-                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show(this, validationError, "无法开始转换", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
-        if (!File.Exists(binPath))
-        {
-            MessageBox.Show(this, $"BIN 文件不存在:\n{binPath}", "缺少输入",
-                MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-
-        var scriptPath = FindConverterScript();
-        if (scriptPath is null)
-        {
-            MessageBox.Show(this,
-                "找不到 bin_to_audio_windows.ps1。\n请把本程序放到 cdrom-dump-tools 仓库目录内(gui\\CdromDumpToolsGui 之外任意位置)。",
-                "缺少转换脚本", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return;
-        }
-
-        var host = FindPowerShellHost();
-        var (executable, processArgs) = BuildInvocation(host, scriptPath, binPath);
-
-        SaveSettingsFromUi();
-        _log.Clear();
-        AppendLogLine($"转换脚本: {scriptPath}");
-        AppendLogLine($"PowerShell: {executable}");
-        AppendLogLine($"开始转换 {binPath} ...");
-        AppendLogLine("");
 
         try
         {
-            var psi = new ProcessStartInfo
+            AppSettingsStore.Save(CaptureSettings());
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            AppendLog($"警告：无法保存最近设置：{exception.Message}", isError: true);
+        }
+
+        _logTextBox.Clear();
+        _reportedOutputDirectory = null;
+        _cancellationRequested = false;
+        _lastOutputDirectory = null;
+        _openOutputButton.Enabled = false;
+        SetRunningState(true, "正在转换…");
+
+        Process? process = null;
+        try
+        {
+            var startInfo = ConverterCommand.CreateStartInfo(powerShellPath!, scriptPath!, options);
+            AppendLog("PowerShell: " + powerShellPath);
+            AppendLog("命令: " + ConverterCommand.CreateSafePreview(powerShellPath!, startInfo.ArgumentList.ToArray()));
+            AppendLog(string.Empty);
+
+            process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
+            _process = process;
+            process.OutputDataReceived += (_, eventArgs) => HandleProcessLine(eventArgs.Data, isError: false);
+            process.ErrorDataReceived += (_, eventArgs) => HandleProcessLine(eventArgs.Data, isError: true);
+
+            if (!process.Start())
             {
-                FileName = executable,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true,
-                StandardOutputEncoding = Encoding.UTF8,
-                StandardErrorEncoding = Encoding.UTF8,
-            };
-            foreach (var arg in processArgs)
-            {
-                psi.ArgumentList.Add(arg);
+                throw new InvalidOperationException("PowerShell 进程未能启动。");
             }
 
-            _process = new Process { StartInfo = psi, EnableRaisingEvents = true };
-            _process.OutputDataReceived += OnOutputLine;
-            _process.ErrorDataReceived += OnErrorLine;
-            _process.Exited += OnProcessExited;
-            _process.Start();
-            _process.BeginOutputReadLine();
-            _process.BeginErrorReadLine();
-        }
-        catch (Exception ex)
-        {
-            _process = null;
-            AppendLogLine($"无法启动转换进程: {ex.Message}");
-            MessageBox.Show(this, $"无法启动 PowerShell 转换进程:\n{ex.Message}", "启动失败",
-                MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return;
-        }
+            process.StandardInput.Close();
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+            await process.WaitForExitAsync();
+            process.WaitForExit();
 
-        _running = true;
-        _outputFolder = null;
-        _runButton.Enabled = false;
-        _cancelButton.Enabled = true;
-        _openOutputButton.Enabled = false;
-        _statusLabel.Text = "转换中...";
+            if (_cancellationRequested)
+            {
+                SetRunningState(false, "已取消");
+                AppendLog("转换已取消。", isError: true);
+            }
+            else if (process.ExitCode == 0 && _reportedOutputDirectory is not null)
+            {
+                _lastOutputDirectory = Path.GetFullPath(_reportedOutputDirectory);
+                SetRunningState(false, "转换完成");
+                AppendLog(string.Empty);
+                AppendLog("转换完成。", isError: false);
+
+                if (_lastOutputDirectory is not null && Directory.Exists(_lastOutputDirectory))
+                {
+                    _openOutputButton.Enabled = true;
+                    if (_openOnSuccessCheckBox.Checked)
+                    {
+                        OpenDirectorySafely(_lastOutputDirectory);
+                    }
+                }
+            }
+            else if (process.ExitCode == 0)
+            {
+                SetRunningState(false, "转换结果未确认");
+                AppendLog("错误：进程退出码为 0，但未收到脚本的精确完成标记，结果不判定为成功。", isError: true);
+            }
+            else
+            {
+                SetRunningState(false, $"转换失败（退出码 {process.ExitCode}）");
+                AppendLog($"转换失败，PowerShell 退出码：{process.ExitCode}", isError: true);
+            }
+        }
+        catch (Exception exception)
+        {
+            SetRunningState(false, "启动或运行失败");
+            AppendLog("错误：" + exception.Message, isError: true);
+            if (!IsDisposed && !Disposing)
+            {
+                MessageBox.Show(this, exception.Message, "转换失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+        finally
+        {
+            if (_running)
+            {
+                SetRunningState(false, "已停止");
+            }
+            if (ReferenceEquals(_process, process))
+            {
+                _process = null;
+            }
+            process?.Dispose();
+
+            if (_closeWhenStopped && !IsDisposed)
+            {
+                _allowClose = true;
+                BeginInvoke(new Action(Close));
+            }
+        }
     }
 
     private void CancelConversion()
     {
-        if (_process is null)
-        {
-            return;
-        }
-        AppendLogLine("");
-        AppendLogLine("用户请求取消,正在终止转换进程...");
-        try
-        {
-            _process.Kill(entireProcessTree: true);
-        }
-        catch (InvalidOperationException)
-        {
-            // The process already exited between the check and the kill.
-        }
-        catch (System.ComponentModel.Win32Exception)
-        {
-            // No permission to kill; the process will end on its own.
-        }
-    }
-
-    private void OnOutputLine(object sender, DataReceivedEventArgs e)
-    {
-        if (e.Data is not null)
-        {
-            AppendLogLine(e.Data);
-        }
-    }
-
-    private void OnErrorLine(object sender, DataReceivedEventArgs e)
-    {
-        if (e.Data is not null)
-        {
-            AppendLogLine(e.Data);
-        }
-    }
-
-    private void OnProcessExited(object? sender, EventArgs e)
-    {
         var process = _process;
-        _process = null;
         if (process is null)
         {
             return;
         }
-        process.WaitForExit();
-        int exitCode = process.ExitCode;
-        process.Dispose();
-        BeginInvoke(() => FinishConversion(exitCode));
-    }
 
-    private void FinishConversion(int exitCode)
-    {
-        _running = false;
-        _runButton.Enabled = true;
+        _statusLabel.Text = "正在取消…";
+        _cancellationRequested = true;
         _cancelButton.Enabled = false;
-
-        if (exitCode == 0)
-        {
-            _outputFolder = FindOutputFolderFromLog();
-            _openOutputButton.Enabled = _outputFolder is not null && Directory.Exists(_outputFolder);
-            _statusLabel.Text = _openOutputButton.Enabled ? "转换完成" : "转换完成(未找到输出目录)";
-            AppendLogLine("");
-            AppendLogLine("转换完成。");
-            if (_openOutputButton.Enabled)
-            {
-                _toolTip.SetToolTip(_openOutputButton, _outputFolder!);
-            }
-        }
-        else
-        {
-            _statusLabel.Text = $"转换失败(退出码 {exitCode})";
-            AppendLogLine("");
-            AppendLogLine($"转换失败,退出码 {exitCode}。请检查上方日志。");
-        }
-    }
-
-    private string? FindOutputFolderFromLog()
-    {
-        var text = _log.Text;
-        var lines = text.Split('\n');
-        for (var i = lines.Length - 1; i >= 0; i--)
-        {
-            var line = lines[i].TrimEnd('\r');
-            const string donePrefix = "Done. Converted tracks are in: ";
-            const string destinationPrefix = "Destination: ";
-            if (line.StartsWith(donePrefix, StringComparison.Ordinal))
-            {
-                return line.Substring(donePrefix.Length).Trim();
-            }
-            if (line.StartsWith(destinationPrefix, StringComparison.Ordinal) && i > lines.Length - 5)
-            {
-                return line.Substring(destinationPrefix.Length).Trim();
-            }
-        }
-        return null;
-    }
-
-    private void OpenOutputFolder()
-    {
-        if (string.IsNullOrWhiteSpace(_outputFolder) || !Directory.Exists(_outputFolder))
-        {
-            MessageBox.Show(this, "输出目录不存在:\n" + _outputFolder, "无法打开",
-                MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
         try
         {
-            Process.Start("explorer.exe", $"\"{_outputFolder}\"");
+            if (!process.HasExited)
+            {
+                // ffmpeg and helper processes must not survive cancellation.
+                process.Kill(entireProcessTree: true);
+                AppendLog("已请求取消，并终止整个转换进程树。", isError: true);
+            }
         }
-        catch (Exception ex)
+        catch (InvalidOperationException)
         {
-            MessageBox.Show(this, $"无法打开资源管理器:\n{ex.Message}", "无法打开",
-                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            // The process exited between HasExited and Kill.
+        }
+        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or NotSupportedException)
+        {
+            AppendLog("取消失败：" + exception.Message, isError: true);
         }
     }
 
-    private void AppendLogLine(string line)
+    private void HandleProcessLine(string? line, bool isError)
     {
-        if (IsDisposed || _log.IsDisposed || !_log.IsHandleCreated)
+        if (line is null)
+        {
+            return;
+        }
+
+        if (OutputPathResolver.TryParseFromLogLine(line, out var parsed) && parsed is not null)
+        {
+            _reportedOutputDirectory = parsed;
+        }
+        AppendLog(line, isError);
+    }
+
+    private void AppendLog(string text, bool isError = false)
+    {
+        if (IsDisposed || Disposing)
         {
             return;
         }
@@ -632,180 +494,418 @@ internal sealed class MainForm : Form
         {
             try
             {
-                BeginInvoke(() => AppendLogLine(line));
+                BeginInvoke(new Action<string, bool>(AppendLog), text, isError);
             }
             catch (InvalidOperationException)
             {
-                // The form was closed while the message was queued.
+                // The window was closed while an asynchronous output event was in flight.
             }
             return;
         }
-        _log.AppendText(line + Environment.NewLine);
-        _log.ScrollToCaret();
+
+        var start = _logTextBox.TextLength;
+        _logTextBox.AppendText(text + Environment.NewLine);
+        if (isError && text.Length > 0)
+        {
+            _logTextBox.Select(start, text.Length);
+            _logTextBox.SelectionColor = Color.Gold;
+            _logTextBox.Select(_logTextBox.TextLength, 0);
+            _logTextBox.SelectionColor = _logTextBox.ForeColor;
+        }
+        _logTextBox.ScrollToCaret();
     }
 
-    // ----- helpers -----
-
-    private static string? FindConverterScript()
+    private void OpenDirectorySafely(string? directory)
     {
-        var directory = new DirectoryInfo(AppContext.BaseDirectory);
-        while (directory is not null)
+        if (string.IsNullOrWhiteSpace(directory))
         {
-            var candidate = Path.Combine(directory.FullName, "bin_to_audio_windows.ps1");
-            if (File.Exists(candidate))
-            {
-                return candidate;
-            }
-            directory = directory.Parent;
-        }
-        return null;
-    }
-
-    private static string FindPowerShellHost()
-    {
-        var pwsh = FindOnPath("pwsh.exe");
-        if (pwsh is not null)
-        {
-            return pwsh;
-        }
-        foreach (var root in new[]
-        {
-            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
-        })
-        {
-            foreach (var sub in new[]
-            {
-                Path.Combine(root, "PowerShell", "7", "pwsh.exe"),
-                Path.Combine(root, "PowerShell", "7-preview", "pwsh.exe"),
-            })
-            {
-                if (File.Exists(sub))
-                {
-                    return sub;
-                }
-            }
-        }
-        return "powershell.exe"; // Windows PowerShell 5.1 is always present on Windows.
-    }
-
-    private static string? FindOnPath(string fileName)
-    {
-        if (Path.IsPathRooted(fileName))
-        {
-            return File.Exists(fileName) ? fileName : null;
-        }
-        var path = Environment.GetEnvironmentVariable("PATH") ?? "";
-        foreach (var directory in path.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
-        {
-            try
-            {
-                var candidate = Path.Combine(directory.Trim('"'), fileName);
-                if (File.Exists(candidate))
-                {
-                    return candidate;
-                }
-            }
-            catch
-            {
-                // A malformed PATH entry must not crash the GUI.
-            }
-        }
-        return null;
-    }
-
-    /// <summary>
-    /// Builds the process invocation. pwsh (PowerShell 7) accepts plain -File
-    /// arguments and writes UTF-8 by default; Windows PowerShell 5.1 needs a
-    /// wrapper command that switches its console output encoding to UTF-8 so
-    /// Chinese log lines survive the pipe intact.
-    /// </summary>
-    private (string Executable, List<string> Arguments) BuildInvocation(
-        string host, string scriptPath, string binPath)
-    {
-        var args = new List<string>
-        {
-            "-BinPath", binPath,
-            "-Format", (string)_formatCombo.SelectedItem!,
-            "-DomesticSourcePriority", (string)_domesticPriorityCombo.SelectedItem!,
-            "-LyricsTranslationFallback", (string)_lyricsFallbackCombo.SelectedItem!,
-            "-AiTranslationProvider", (string)_aiProviderCombo.SelectedItem!,
-        };
-
-        var toc = GetRealText(_tocTextBox);
-        var output = GetRealText(_outputTextBox);
-        var ffmpeg = GetRealText(_ffmpegTextBox);
-        var env = GetRealText(_envTextBox);
-        var userAgent = _userAgentTextBox.Text.Trim();
-        var releaseIndex = (int)_releaseIndexInput.Value;
-
-        if (!string.IsNullOrWhiteSpace(toc)) { args.Add("-TocPath"); args.Add(toc); }
-        if (!string.IsNullOrWhiteSpace(output)) { args.Add("-OutputDirectory"); args.Add(output); }
-        if (!string.IsNullOrWhiteSpace(ffmpeg)) { args.Add("-FfmpegPath"); args.Add(ffmpeg); }
-        if (!string.IsNullOrWhiteSpace(env)) { args.Add("-EnvPath"); args.Add(env); }
-        if (releaseIndex > 0) { args.Add("-ReleaseIndex"); args.Add(releaseIndex.ToString()); }
-        if (_noMetadataCheck.Checked) { args.Add("-NoMetadata"); }
-        if (_noCoverCheck.Checked) { args.Add("-NoCover"); }
-        if (_noLyricsCheck.Checked) { args.Add("-NoLyrics"); }
-        if (_noNetEaseCheck.Checked) { args.Add("-NoNetEase"); }
-        if (_noQQMusicCheck.Checked) { args.Add("-NoQQMusic"); }
-        args.Add("-NoPause");
-        if (!string.IsNullOrWhiteSpace(userAgent)) { args.Add("-MusicBrainzUserAgent"); args.Add(userAgent); }
-
-        // Windows PowerShell 5.1 writes redirected output with the console code
-        // page (for example GBK on Chinese systems). Wrapping the call switches
-        // the encoding to UTF-8 first so the log pane renders correctly.
-        if (Path.GetFileNameWithoutExtension(host).Equals("powershell", StringComparison.OrdinalIgnoreCase))
-        {
-            var command = new StringBuilder("& { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; & ");
-            command.Append(PsQuote(scriptPath));
-            foreach (var arg in args)
-            {
-                command.Append(' ').Append(PsQuote(arg));
-            }
-            command.Append(" }");
-            return (host, new List<string>
-            {
-                "-NoProfile",
-                "-ExecutionPolicy", "Bypass",
-                "-Command", command.ToString(),
-            });
+            return;
         }
 
-        var pwshArgs = new List<string>
+        try
         {
-            "-NoProfile",
-            "-ExecutionPolicy", "Bypass",
-            "-File", scriptPath,
-        };
-        pwshArgs.AddRange(args);
-        return (host, pwshArgs);
-    }
-
-    /// <summary>Quotes a value as a PowerShell single-quoted string literal.</summary>
-    private static string PsQuote(string value) => "'" + value.Replace("'", "''") + "'";
-
-    protected override void OnFormClosing(FormClosingEventArgs e)
-    {
-        if (_running)
-        {
-            var result = MessageBox.Show(this, "转换还在进行中,确定要退出吗?", "退出确认",
-                MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-            if (result != DialogResult.Yes)
+            var fullPath = Path.GetFullPath(directory);
+            if (!Directory.Exists(fullPath))
             {
-                e.Cancel = true;
+                MessageBox.Show(this, "输出目录不存在：\n" + fullPath, "无法打开", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
+
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe"),
+                UseShellExecute = false,
+            };
+            startInfo.ArgumentList.Add(fullPath);
+            Process.Start(startInfo)?.Dispose();
+        }
+        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or InvalidOperationException or ArgumentException)
+        {
+            MessageBox.Show(this, exception.Message, "无法打开输出目录", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void BrowseBin()
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Title = "选择 BIN 光盘镜像",
+            Filter = "BIN 光盘镜像 (*.bin)|*.bin|所有文件 (*.*)|*.*",
+            CheckFileExists = true,
+            Multiselect = false,
+        };
+        SetInitialDirectory(dialog, _binTextBox.Text);
+        if (dialog.ShowDialog(this) == DialogResult.OK)
+        {
+            ApplyDroppedOrSelectedFile(dialog.FileName);
+        }
+    }
+
+    private void BrowseToc()
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Title = "选择 TOC 文件",
+            Filter = "cdrdao TOC 文件 (*.toc)|*.toc|所有文件 (*.*)|*.*",
+            CheckFileExists = true,
+            Multiselect = false,
+        };
+        SetInitialDirectory(dialog, _tocTextBox.Text);
+        if (dialog.ShowDialog(this) == DialogResult.OK)
+        {
+            _tocTextBox.Text = dialog.FileName;
+        }
+    }
+
+    private void BrowseFfmpeg()
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Title = "选择 ffmpeg.exe",
+            Filter = "FFmpeg (ffmpeg.exe)|ffmpeg.exe|可执行文件 (*.exe)|*.exe|所有文件 (*.*)|*.*",
+            CheckFileExists = true,
+            Multiselect = false,
+        };
+        SetInitialDirectory(dialog, _ffmpegTextBox.Text);
+        if (dialog.ShowDialog(this) == DialogResult.OK)
+        {
+            _ffmpegTextBox.Text = dialog.FileName;
+        }
+    }
+
+    private void BrowseEnvironmentFile()
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Title = "选择 .env 文件",
+            Filter = ".env 文件 (.env;*.env)|.env;*.env|环境配置 (*.env;*.txt)|*.env;*.txt|所有文件 (*.*)|*.*",
+            CheckFileExists = true,
+            Multiselect = false,
+        };
+        SetInitialDirectory(dialog, _envTextBox.Text);
+        if (dialog.ShowDialog(this) == DialogResult.OK)
+        {
+            _envTextBox.Text = dialog.FileName;
+        }
+    }
+
+    private void BrowseOutputParent()
+    {
+        using var dialog = new FolderBrowserDialog
+        {
+            Description = "选择用于存放最终专辑目录的父目录",
+            UseDescriptionForTitle = true,
+            ShowNewFolderButton = true,
+        };
+        var current = _outputTextBox.Text.Trim();
+        if (current.Length > 0)
+        {
             try
             {
-                _process?.Kill(entireProcessTree: true);
+                var parent = Path.GetDirectoryName(Path.GetFullPath(current));
+                if (!string.IsNullOrWhiteSpace(parent) && Directory.Exists(parent))
+                {
+                    dialog.InitialDirectory = parent;
+                }
             }
-            catch
+            catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
             {
-                // Best effort; the OS reaps the child when we exit.
+                // The user can still choose a parent directory when the typed path is invalid.
             }
         }
-        SaveSettingsFromUi();
-        base.OnFormClosing(e);
+        if (dialog.ShowDialog(this) == DialogResult.OK)
+        {
+            var binForName = string.IsNullOrWhiteSpace(_binTextBox.Text)
+                ? Path.Combine(dialog.SelectedPath, "cdrom.bin")
+                : _binTextBox.Text.Trim();
+            _outputTextBox.Text = OutputPathResolver.SuggestUnusedDirectory(
+                dialog.SelectedPath,
+                binForName,
+                SelectedText(_formatComboBox, "flac"));
+        }
+    }
+
+    private void HandleDragEnter(object? sender, DragEventArgs eventArgs)
+    {
+        eventArgs.Effect = eventArgs.Data?.GetDataPresent(DataFormats.FileDrop) == true
+            ? DragDropEffects.Copy
+            : DragDropEffects.None;
+    }
+
+    private void HandleDragDrop(object? sender, DragEventArgs eventArgs)
+    {
+        if (eventArgs.Data?.GetData(DataFormats.FileDrop) is not string[] paths)
+        {
+            return;
+        }
+
+        foreach (var path in paths.Where(File.Exists))
+        {
+            ApplyDroppedOrSelectedFile(path);
+        }
+    }
+
+    private void ApplyDroppedOrSelectedFile(string path)
+    {
+        var extension = Path.GetExtension(path);
+        if (extension.Equals(".bin", StringComparison.OrdinalIgnoreCase))
+        {
+            _binTextBox.Text = Path.GetFullPath(path);
+            var siblingToc = Path.ChangeExtension(path, ".toc");
+            if (File.Exists(siblingToc))
+            {
+                _tocTextBox.Text = Path.GetFullPath(siblingToc);
+            }
+        }
+        else if (extension.Equals(".toc", StringComparison.OrdinalIgnoreCase))
+        {
+            _tocTextBox.Text = Path.GetFullPath(path);
+            var siblingBin = Path.ChangeExtension(path, ".bin");
+            if (File.Exists(siblingBin) && string.IsNullOrWhiteSpace(_binTextBox.Text))
+            {
+                _binTextBox.Text = Path.GetFullPath(siblingBin);
+            }
+        }
+    }
+
+    private void UpdateCommandPreview()
+    {
+        try
+        {
+            var locatedScriptPath = ScriptLocator.FindConverterScript(AppContext.BaseDirectory);
+            var locatedPowerShellPath = PowerShellLocator.FindExecutable();
+            var scriptPath = locatedScriptPath ?? ScriptLocator.ScriptFileName;
+            var powerShellPath = locatedPowerShellPath ?? "powershell.exe";
+            var options = CaptureConversionOptions();
+            if (string.IsNullOrWhiteSpace(options.BinPath))
+            {
+                options.BinPath = Path.Combine(Environment.CurrentDirectory, "请选择-BIN.bin");
+            }
+            var arguments = locatedScriptPath is not null && locatedPowerShellPath is not null
+                ? ConverterCommand.CreateStartInfo(locatedPowerShellPath, locatedScriptPath, options).ArgumentList.ToArray()
+                : ConverterCommand.BuildArguments(scriptPath, options);
+            _previewTextBox.Text = ConverterCommand.CreateSafePreview(powerShellPath, arguments);
+        }
+        catch (Exception exception)
+        {
+            _previewTextBox.Text = "命令预览暂不可用：" + exception.Message;
+        }
+    }
+
+    private static bool ValidateInputs(
+        string? scriptPath,
+        string? powerShellPath,
+        ConversionOptions options,
+        out string error)
+    {
+        if (scriptPath is null || !File.Exists(scriptPath))
+        {
+            error = "找不到 bin_to_audio_windows.ps1。请把 GUI 放在仓库的 gui 目录中，或把脚本与程序一起发布。";
+            return false;
+        }
+        if (powerShellPath is null || !File.Exists(powerShellPath))
+        {
+            error = "找不到 PowerShell 7 或 Windows PowerShell。";
+            return false;
+        }
+        if (string.IsNullOrWhiteSpace(options.BinPath) || !File.Exists(options.BinPath))
+        {
+            error = "请选择一个存在的 BIN 光盘镜像。";
+            return false;
+        }
+        if (!Path.GetExtension(options.BinPath).Equals(".bin", StringComparison.OrdinalIgnoreCase))
+        {
+            error = "BIN 镜像应使用 .bin 扩展名。";
+            return false;
+        }
+        if (!ValidateOptionalFile(options.TocPath, "TOC", out error)
+            || !ValidateOptionalFile(options.FfmpegPath, "FFmpeg", out error)
+            || !ValidateOptionalFile(options.EnvPath, ".env", out error))
+        {
+            return false;
+        }
+        if (!string.IsNullOrWhiteSpace(options.OutputDirectory))
+        {
+            if (!OutputPathResolver.TryValidateExplicitDirectory(options.OutputDirectory, out _, out var outputError))
+            {
+                error = outputError ?? "最终输出目录无效。";
+                return false;
+            }
+        }
+
+        error = string.Empty;
+        return true;
+    }
+
+    private static bool ValidateOptionalFile(string? path, string label, out string error)
+    {
+        if (!string.IsNullOrWhiteSpace(path) && !File.Exists(path))
+        {
+            error = $"{label} 文件不存在：\n{path}";
+            return false;
+        }
+        error = string.Empty;
+        return true;
+    }
+
+    private void SetRunningState(bool running, string status)
+    {
+        _running = running;
+        if (IsDisposed || Disposing)
+        {
+            return;
+        }
+        _runButton.Enabled = !running;
+        _cancelButton.Enabled = running;
+        _statusLabel.Text = status;
+    }
+
+    private void HandleFormClosing(object? sender, FormClosingEventArgs eventArgs)
+    {
+        if (_running && !_allowClose)
+        {
+            var answer = MessageBox.Show(
+                this,
+                "转换仍在进行。是否终止整个转换进程树并退出？",
+                "确认退出",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning);
+            if (answer != DialogResult.Yes)
+            {
+                eventArgs.Cancel = true;
+                return;
+            }
+            eventArgs.Cancel = true;
+            _closeWhenStopped = true;
+            CancelConversion();
+            return;
+        }
+
+        try
+        {
+            AppSettingsStore.Save(CaptureSettings());
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // Closing must not be blocked by an unwritable settings directory.
+        }
+    }
+
+    private static TextBox NewPathTextBox(string placeholder) => new()
+    {
+        Dock = DockStyle.Fill,
+        PlaceholderText = placeholder,
+    };
+
+    private static ComboBox NewChoiceCombo(params string[] items)
+    {
+        var comboBox = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
+        comboBox.Items.AddRange(items);
+        comboBox.SelectedIndex = 0;
+        return comboBox;
+    }
+
+    private static CheckBox NewCheckBox(string text) => new()
+    {
+        Text = text,
+        AutoSize = true,
+        Margin = new Padding(3, 4, 16, 4),
+    };
+
+    private static void AddPathRow(
+        TableLayoutPanel table,
+        int row,
+        string labelText,
+        TextBox textBox,
+        Action browseAction,
+        Action? clearAction = null,
+        string? helpText = null)
+    {
+        table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        var label = new Label
+        {
+            Text = labelText,
+            TextAlign = ContentAlignment.MiddleLeft,
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            Margin = new Padding(3, 8, 3, 3),
+        };
+        var browseButton = new Button { Text = "浏览…", AutoSize = true, Margin = new Padding(8, 2, 0, 2) };
+        browseButton.Click += (_, _) => browseAction();
+        table.Controls.Add(label, 0, row);
+        table.Controls.Add(textBox, 1, row);
+        table.Controls.Add(browseButton, 2, row);
+
+        if (clearAction is not null)
+        {
+            var clearButton = new Button { Text = "清空", AutoSize = true, Margin = new Padding(5, 2, 0, 2) };
+            clearButton.Click += (_, _) => clearAction();
+            table.Controls.Add(clearButton, 3, row);
+        }
+        if (!string.IsNullOrWhiteSpace(helpText))
+        {
+            textBox.AccessibleDescription = helpText;
+        }
+    }
+
+    private static void AddLabeledControl(TableLayoutPanel table, int row, int column, string labelText, Control control)
+    {
+        var label = new Label
+        {
+            Text = labelText,
+            TextAlign = ContentAlignment.MiddleLeft,
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            Margin = new Padding(3, 8, 3, 3),
+        };
+        table.Controls.Add(label, column, row);
+        table.Controls.Add(control, column + 1, row);
+    }
+
+    private static string SelectedText(ComboBox comboBox, string fallback) =>
+        comboBox.SelectedItem?.ToString() ?? fallback;
+
+    private static void SelectOrDefault(ComboBox comboBox, string? value, string fallback)
+    {
+        var index = value is null ? -1 : comboBox.Items.IndexOf(value);
+        comboBox.SelectedItem = index >= 0 ? value : fallback;
+    }
+
+    private static string? EmptyToNull(string value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static void SetInitialDirectory(FileDialog dialog, string currentPath)
+    {
+        try
+        {
+            var directory = File.Exists(currentPath) ? Path.GetDirectoryName(currentPath) : null;
+            if (!string.IsNullOrWhiteSpace(directory) && Directory.Exists(directory))
+            {
+                dialog.InitialDirectory = directory;
+            }
+        }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            // Ignore invalid text typed into a path field.
+        }
     }
 }

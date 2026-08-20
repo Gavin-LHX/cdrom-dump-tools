@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\CdromDumpToolsGui\Core\ConversionOptions.cs" Link="Core\ConversionOptions.cs" />
+    <Compile Include="..\CdromDumpToolsGui\Core\ConverterCommand.cs" Link="Core\ConverterCommand.cs" />
+    <Compile Include="..\CdromDumpToolsGui\Core\OutputPathResolver.cs" Link="Core\OutputPathResolver.cs" />
+    <Compile Include="..\CdromDumpToolsGui\Core\PowerShellLocator.cs" Link="Core\PowerShellLocator.cs" />
+    <Compile Include="..\CdromDumpToolsGui\Core\ScriptLocator.cs" Link="Core\ScriptLocator.cs" />
+  </ItemGroup>
+
+</Project>

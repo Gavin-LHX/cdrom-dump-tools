@@ -3,6 +3,7 @@ setlocal EnableExtensions
 
 set "GUI_ROOT=%~dp0"
 set "GUI_PROJECT=%GUI_ROOT%CdromDumpToolsGui\CdromDumpToolsGui.csproj"
+set "PUBLISH_DIR=%GUI_ROOT%publish\win-x64"
 
 where dotnet.exe >nul 2>nul
 if errorlevel 1 (
@@ -24,15 +25,26 @@ if not exist "%GUI_PROJECT%" (
 )
 
 pushd "%GUI_ROOT%" || exit /b 1
-dotnet.exe restore "%GUI_PROJECT%"
-if errorlevel 1 goto :failed
+if exist "%PUBLISH_DIR%" rmdir /s /q "%PUBLISH_DIR%"
+if exist "%PUBLISH_DIR%" (
+  echo [ERROR] Could not clean publish directory: "%PUBLISH_DIR%"
+  popd
+  exit /b 1
+)
 
-dotnet.exe build "%GUI_PROJECT%" --configuration Release --no-restore
+dotnet.exe publish "%GUI_PROJECT%" ^
+  --configuration Release ^
+  --runtime win-x64 ^
+  --self-contained false ^
+  --output "%PUBLISH_DIR%" ^
+  -p:DebugSymbols=false ^
+  -p:DebugType=None
 if errorlevel 1 goto :failed
 
 echo.
-echo Build completed successfully.
-echo Output: "%GUI_ROOT%CdromDumpToolsGui\bin\Release\net8.0-windows\"
+echo Publish completed successfully.
+echo Output: "%PUBLISH_DIR%"
+echo This framework-dependent build requires the .NET 8 Desktop Runtime x64.
 popd
 exit /b 0
 

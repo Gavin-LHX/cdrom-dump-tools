@@ -22,7 +22,7 @@ jobs:
     name: Package and publish
     needs: validate
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     permissions:
       contents: write
     steps:
@@ -31,6 +31,11 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Set up pinned .NET 8 SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 8.0.424
 
       - name: Verify tag and main ancestry
         shell: bash
@@ -57,6 +62,31 @@ jobs:
           fi
           command -v gh >/dev/null
 
+      - name: Publish framework-dependent Windows GUI
+        shell: bash
+        run: |
+          set -euo pipefail
+          project='gui/CdromDumpToolsGui/CdromDumpToolsGui.csproj'
+          output='dist/gui-publish'
+          version="${GITHUB_REF_NAME#v}"
+
+          dotnet restore "$project" \
+            --runtime win-x64 \
+            -p:EnableWindowsTargeting=true
+          dotnet publish "$project" \
+            --configuration Release \
+            --runtime win-x64 \
+            --self-contained false \
+            --no-restore \
+            --output "$output" \
+            -p:EnableWindowsTargeting=true \
+            -p:ContinuousIntegrationBuild=true \
+            -p:Version="$version" \
+            -p:DebugSymbols=false \
+            -p:DebugType=None
+
+          test -f "$output/CdromDumpToolsGui.exe"
+
       - name: Build reproducible release archives
         shell: bash
         run: |
@@ -65,9 +95,18 @@ jobs:
           package="cdrom-dump-tools-${version}"
           source_date_epoch="$(git show -s --format=%ct "$GITHUB_SHA")"
 
-          mkdir -p "dist/windows/$package" "dist/linux/$package"
+          mkdir -p "dist/windows/$package/gui" "dist/linux/$package/gui"
           install -m 0644 README.md .env.example bin_to_audio_windows.ps1 bin_to_audio_windows.cmd "dist/windows/$package/"
+          install -m 0644 gui/README.md "dist/windows/$package/gui/"
+          cp -a dist/gui-publish/. "dist/windows/$package/gui/"
           install -m 0644 README.md "dist/linux/$package/"
+          install -m 0644 gui/README.md "dist/linux/$package/gui/"
+
+          if find dist/windows -type f -name '.env' -print -quit | grep -q .; then
+            printf 'A real .env file must never enter the release archive.\n' >&2
+            exit 1
+          fi
+
           install -m 0755 dump_cdrom.sh bin_to_audio.sh "dist/linux/$package/"
           find "dist/windows/$package" "dist/linux/$package" -exec touch -d "@$source_date_epoch" {} +
 

@@ -1,33 +1,38 @@
-using System.IO;
+using System.Text;
 using System.Text.Json;
+using CdromDumpToolsGui.Core;
 
 namespace CdromDumpToolsGui;
 
-/// <summary>
-/// Persists the user's last-used paths and options between runs so that
-/// dragging a disc onto the window does not force re-typing everything.
-/// </summary>
 internal sealed class AppSettings
 {
-    public string? BinPath { get; set; }
-    public string? TocPath { get; set; }
-    public string? OutputDirectory { get; set; }
-    public string? FfmpegPath { get; set; }
-    public string? EnvPath { get; set; }
+    public string BinPath { get; set; } = string.Empty;
+    public string TocPath { get; set; } = string.Empty;
+    public string OutputDirectory { get; set; } = string.Empty;
+    public string FfmpegPath { get; set; } = string.Empty;
+    public string EnvPath { get; set; } = string.Empty;
     public string Format { get; set; } = "flac";
-    public string DomesticSourcePriority { get; set; } = "NetEaseFirst";
-    public string LyricsTranslationFallback { get; set; } = "Auto";
-    public string AiTranslationProvider { get; set; } = "Auto";
-    public int ReleaseIndex { get; set; }
     public bool NoMetadata { get; set; }
     public bool NoCover { get; set; }
     public bool NoLyrics { get; set; }
     public bool NoNetEase { get; set; }
     public bool NoQQMusic { get; set; }
-    public string? MusicBrainzUserAgent { get; set; }
+    public bool NoPause { get; set; } = true;
+    public string LyricsTranslationFallback { get; set; } = "Auto";
+    public string AiTranslationProvider { get; set; } = "Auto";
+    public string DomesticSourcePriority { get; set; } = "NetEaseFirst";
+    public int ReleaseIndex { get; set; }
+    public string MusicBrainzUserAgent { get; set; } = ConversionOptions.DefaultMusicBrainzUserAgent;
+    public bool OpenOutputOnSuccess { get; set; }
+}
 
-    private static string SettingsDirectory =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CdromDumpToolsGui");
+internal static class AppSettingsStore
+{
+    private static readonly JsonSerializerOptions SerializerOptions = new() { WriteIndented = true };
+
+    private static string SettingsDirectory => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "CdromDumpToolsGui");
 
     private static string SettingsPath => Path.Combine(SettingsDirectory, "settings.json");
 
@@ -35,32 +40,58 @@ internal sealed class AppSettings
     {
         try
         {
-            if (File.Exists(SettingsPath))
+            if (!File.Exists(SettingsPath))
             {
-                var loaded = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(SettingsPath));
-                if (loaded is not null)
-                {
-                    return loaded;
-                }
+                return new AppSettings();
             }
+
+            var json = File.ReadAllText(SettingsPath, Encoding.UTF8);
+            return JsonSerializer.Deserialize<AppSettings>(json, SerializerOptions) ?? new AppSettings();
         }
-        catch
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
         {
-            // Corrupt or unreadable settings should never block the GUI from starting.
+            // A damaged settings file must never prevent the app from starting.
+            return new AppSettings();
         }
-        return new AppSettings();
     }
 
-    public void Save()
+    public static void Save(AppSettings settings)
     {
+        ArgumentNullException.ThrowIfNull(settings);
+        Directory.CreateDirectory(SettingsDirectory);
+
+        // AppSettings intentionally contains only an .env path, never API key values.
+        var json = JsonSerializer.Serialize(settings, SerializerOptions);
+        var temporaryPath = Path.Combine(SettingsDirectory, $"settings.{Guid.NewGuid():N}.tmp");
         try
         {
-            Directory.CreateDirectory(SettingsDirectory);
-            File.WriteAllText(SettingsPath, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
+            File.WriteAllText(temporaryPath, json, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            if (File.Exists(SettingsPath))
+            {
+                try
+                {
+                    File.Replace(temporaryPath, SettingsPath, destinationBackupFileName: null);
+                }
+                catch (PlatformNotSupportedException)
+                {
+                    File.Move(temporaryPath, SettingsPath, overwrite: true);
+                }
+            }
+            else
+            {
+                File.Move(temporaryPath, SettingsPath);
+            }
         }
-        catch
+        finally
         {
-            // Failing to persist settings is not fatal.
+            try
+            {
+                File.Delete(temporaryPath);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                // The completed settings write is more important than temporary-file cleanup.
+            }
         }
     }
 }

@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+      - gui
   workflow_dispatch:
   workflow_call:
 
@@ -110,6 +111,30 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Set up pinned .NET 8 SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 8.0.424
+
+      - name: Restore and build GUI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $guiProject = '.\gui\CdromDumpToolsGui\CdromDumpToolsGui.csproj'
+          $checksProject = '.\gui\CdromDumpToolsGui.CoreChecks\CdromDumpToolsGui.CoreChecks.csproj'
+
+          dotnet restore $guiProject
+          dotnet restore $checksProject
+          dotnet build $guiProject --configuration Release --no-restore -p:ContinuousIntegrationBuild=true
+          dotnet build $checksProject --configuration Release --no-restore -p:ContinuousIntegrationBuild=true
+
+      - name: Run GUI core checks
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $checksProject = '.\gui\CdromDumpToolsGui.CoreChecks\CdromDumpToolsGui.CoreChecks.csproj'
+          dotnet run --project $checksProject --configuration Release --no-build
 
       - name: Parse with PowerShell 7
         shell: pwsh

@@ -2,7 +2,7 @@
 
 一套用于完整读取 CD、保存 BIN/TOC 镜像，以及将 CD-DA 音轨转换为 FLAC/WAV 的脚本。
 
-项目同时提供 Linux 服务器端的光盘镜像脚本和 Windows 本地增强转换脚本。Windows 版本能够自动查询专辑与曲目信息、重命名文件、写入封面和标签，并获取同步歌词。
+项目同时提供 Linux 服务器端的光盘镜像脚本、Windows 本地增强转换脚本和 .NET 8 WinForms 图形界面。Windows 版本能够自动查询专辑与曲目信息、重命名文件、写入封面和标签，并获取同步歌词。
 
 ## 文件说明
 
@@ -12,6 +12,7 @@
 | `bin_to_audio.sh` | Linux | 将纯 CD-DA 的 BIN/TOC 拆分为基础 FLAC/WAV 音轨 |
 | `bin_to_audio_windows.ps1` | Windows | 增强转换器：拆轨、元数据、年份/流派比对、封面、歌词和自动命名 |
 | `bin_to_audio_windows.cmd` | Windows | 拖放式启动器，默认调用 PowerShell 脚本转换为 FLAC |
+| [`gui/`](gui/README.md) | Windows | .NET 8 WinForms 前端：配置转换参数、显示实时日志、取消任务并打开最终输出目录 |
 | `.env.example` | Windows | 机器翻译回退的配置模板；复制为 `.env` 后填写 API Key，真实 `.env` 不应提交或分享 |
 
 ## 功能概览
@@ -69,6 +70,20 @@
 - 在线服务不可用时使用 30 天缓存、多源回退或降级转换，不中断音频处理。
 - 网易云、QQ 音乐和 LRCLIB 歌词使用独立缓存命名空间；接口临时不可用时会依次切换备用域名、退避重试、使用缓存或进入下一来源。
 - AI/Google 译文按服务、模型、Prompt 版本和原歌词哈希保存在本机独立缓存中，重复转换相同内容时可避免不必要的 API 调用和费用。
+
+### Windows 图形界面
+
+[`gui/`](gui/README.md) 提供重新设计的 .NET 8 WinForms 前端，但不复制或替代 PowerShell 转换逻辑。它支持选择/拖放 BIN 与 TOC、FLAC/WAV、FFmpeg、自动或指定输出目录，以及元数据、封面、歌词、国内源优先级和 AI/Google 翻译回退等参数；运行时会显示实时日志，并从日志识别经专辑元数据命名后的实际输出目录。
+
+在仓库中构建或发布 GUI：
+
+```cmd
+cd gui
+build.cmd
+publish.cmd
+```
+
+`build.cmd` 需要 .NET 8 SDK；`publish.cmd` 在 `gui\publish\win-x64\` 生成需要 .NET 8 Desktop Runtime x64 的 framework-dependent 文件。该本地发布目录不会自动复制根 PowerShell 脚本，运行时须保持能够从 GUI 目录向上找到 `bin_to_audio_windows.ps1`。完整依赖、输出目录语义、`.env` 安全要求和发布包结构见 [GUI 中文说明](gui/README.md)。
 
 ## Linux：安装与读取 CD
 
@@ -316,8 +331,8 @@ notepad .env
 
 仓库内置 GitHub Actions：
 
-- **CI**：Pull Request、推送到 `main` 或手动运行时，在 Ubuntu 24.04 检查 Bash 语法、ShellCheck 和 Linux 转换器离线 dry-run；在 Windows Server 2025 分别使用 PowerShell 7 与 Windows PowerShell 5.1 解析脚本、运行离线 smoke test，并执行关键 PSScriptAnalyzer 规则。
-- **CD**：推送指向 `main` 历史的 SemVer 标签（例如 `v2.7.0`）后，先复用完整 CI，再自动生成 Windows ZIP、Linux tar.gz 和 `SHA256SUMS.txt`，最后发布或更新对应 GitHub Release。Windows ZIP 会附带安全的 `.env.example` 配置模板。
+- **CI**：Pull Request、推送到 `main`/`gui` 或手动运行时，在 Ubuntu 24.04 检查 Bash 语法、ShellCheck 和 Linux 转换器离线 dry-run；在 Windows Server 2025 使用固定的 .NET 8 SDK 还原、构建并检查 GUI，同时分别使用 PowerShell 7 与 Windows PowerShell 5.1 解析脚本、运行离线 smoke test，并执行关键 PSScriptAnalyzer 规则。
+- **CD**：推送指向 `main` 历史的 SemVer 标签（例如 `v2.7.0`）后，先复用完整 CI，再构建 framework-dependent `win-x64` GUI，生成 Windows ZIP、Linux tar.gz 和 `SHA256SUMS.txt`，最后发布或更新对应 GitHub Release。新标签生成的 Windows ZIP 会把 GUI 与根 PowerShell 启动文件、README 和安全的 `.env.example` 放在同一包内。
 - GitHub Actions 依赖固定到完整提交 SHA，并由 Dependabot 每周检查更新；CI 只拥有仓库读取权限，只有发布作业拥有 `contents: write`。
 
 发布新版本：
@@ -329,7 +344,7 @@ git tag v2.7.0
 git push origin v2.7.0
 ```
 
-发布归档只包含对应平台的脚本、README，以及 Windows 包中的空白 `.env.example` 模板；绝不包含真实 `.env`、API Key、BIN、音频、缓存、歌词或本地生成的元数据。
+发布归档只包含对应平台的脚本、README、Windows GUI 运行文件，以及 Windows 包中的空白 `.env.example` 模板；绝不包含真实 `.env`、API Key、BIN、音频、缓存、歌词或本地生成的元数据。
 
 ## 本地歌词命名
 

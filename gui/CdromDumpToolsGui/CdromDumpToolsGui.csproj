@@ -10,9 +10,9 @@
     <AssemblyName>CdromDumpToolsGui</AssemblyName>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>1.0.0</Version>
+    <Version>2.7.0</Version>
     <Product>CD-ROM Dump Tools GUI</Product>
-    <Description>Graphical wrapper for the cdrom-dump-tools Windows converter</Description>
+    <Description>Windows graphical interface for cdrom-dump-tools</Description>
   </PropertyGroup>
 
 </Project>
