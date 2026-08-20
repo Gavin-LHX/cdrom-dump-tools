@@ -2692,9 +2692,9 @@ function Resolve-LyricsTranslationSettings {
     $validModes = @('None', 'Google', 'AI', 'GoogleThenAI', 'AIThenGoogle')
     $resolvedMode = $Mode
     if ($resolvedMode -eq 'Auto') {
-        $resolvedMode = Get-TranslationConfigurationValue -Name 'LYRICS_TRANSLATION_FALLBACK' -DotEnvValues $DotEnvValues -DefaultValue 'GoogleThenAI'
+        $resolvedMode = Get-TranslationConfigurationValue -Name 'LYRICS_TRANSLATION_FALLBACK' -DotEnvValues $DotEnvValues -DefaultValue 'AIThenGoogle'
         if ($resolvedMode -eq 'Auto') {
-            $resolvedMode = 'GoogleThenAI'
+            $resolvedMode = 'AIThenGoogle'
         }
     }
     if ($resolvedMode -notin $validModes) {
@@ -2840,10 +2840,20 @@ function Test-LikelyChineseLyrics {
     $chineseSpecificCount = [regex]::Matches($plainText, '[这们吗吧呢了过为与个里还后发让从对开关无云门间长东乐点爱见听说请约寻觉你仍找却我的他她它是不有在就也都把被给和而要想能没很更最只才又已所因如怎什谁哪]').Count
     if ($kanaCount -eq 0 -and $hangulCount -eq 0) {
         # Han-only text is ambiguous: Japanese titles/lyrics can be entirely
-        # kanji.  Require multiple characters that provide evidence for modern
-        # Chinese before skipping a paid translation fallback.
-        return $cjkCount -ge 4 -and $chineseSpecificCount -ge 2 -and
-            $letterCount -gt 0 -and (($cjkCount / [double] $letterCount) -ge 0.25)
+        # kanji.  Require a Chinese/simplified glyph excluded from modern
+        # Japanese usage. Shared characters and shared compounds such as
+        # 的/点/着/不能 do not count by themselves.
+        $distinctSimplifiedChineseCount = @(
+            [regex]::Matches($plainText, '[你她它哪这们吗吧呢过为个还发让从对开关无门间长东乐爱见听说请约寻觉风梦乡头话归欢飞边样给读时岁]') |
+                ForEach-Object { $_.Value } |
+                Select-Object -Unique
+        ).Count
+        return (
+            $cjkCount -ge 3 -and
+            $letterCount -gt 0 -and
+            (($cjkCount / [double] $letterCount) -ge 0.25) -and
+            $distinctSimplifiedChineseCount -ge 1
+        )
     }
 
     # Do not reject an otherwise Chinese or bilingual lyric merely because it
@@ -2856,6 +2866,68 @@ function Test-LikelyChineseLyrics {
     return $cjkCount -ge 8 -and $letterCount -gt 0 -and
         (($cjkCount / [double] $letterCount) -ge 0.60) -and
         ($strongOverallDominance -or $supportedByChineseSpecificText)
+}
+
+function Test-LyricsResultHasChineseContent {
+    param([object] $LyricsResult)
+
+    if ($null -eq $LyricsResult -or
+        (Get-ObjectProperty -Object $LyricsResult -Name 'Instrumental') -eq $true) {
+        return $false
+    }
+    if ((Get-ObjectProperty -Object $LyricsResult -Name 'HasChineseTranslation') -eq $true) {
+        return $true
+    }
+
+    try {
+        $payload = Get-LyricsTranslationPayload -LyricsResult $LyricsResult
+        return $null -ne $payload -and $payload.AlreadyChinese -eq $true
+    }
+    catch {
+        # Candidate selection must not discard otherwise usable lyrics merely
+        # because language detection hit a translation safety limit.
+        return $false
+    }
+}
+
+function Test-LyricsCandidatesHaveChineseContent {
+    param([object[]] $Candidates)
+
+    foreach ($candidate in @($Candidates)) {
+        if (Test-LyricsResultHasChineseContent -LyricsResult $candidate) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Select-PreferredLyricsCandidate {
+    param([object[]] $Candidates)
+
+    $orderedCandidates = @($Candidates | Where-Object { $null -ne $_ })
+    foreach ($candidate in $orderedCandidates) {
+        if (Test-LyricsResultHasChineseContent -LyricsResult $candidate) {
+            return [pscustomobject]@{
+                Lyrics    = $candidate
+                Selection = 'Chinese'
+            }
+        }
+    }
+    foreach ($candidate in $orderedCandidates) {
+        if ((Get-ObjectProperty -Object $candidate -Name 'Instrumental') -ne $true) {
+            return [pscustomobject]@{
+                Lyrics    = $candidate
+                Selection = 'Original'
+            }
+        }
+    }
+    if ($orderedCandidates.Count -gt 0) {
+        return [pscustomobject]@{
+            Lyrics    = $orderedCandidates[0]
+            Selection = 'Instrumental'
+        }
+    }
+    return $null
 }
 
 function Get-LyricsTranslationPayload {
@@ -5444,7 +5516,7 @@ try {
                 -not [string]::IsNullOrWhiteSpace($track.Title) -and
                 -not [string]::IsNullOrWhiteSpace($lookupArtist) -and
                 -not [string]::IsNullOrWhiteSpace($albumTitle)) {
-                $domesticLyricsCandidates = [System.Collections.Generic.List[object]]::new()
+                $onlineLyricsCandidates = [System.Collections.Generic.List[object]]::new()
                 $lyricsAttemptDetails = [System.Collections.Generic.List[string]]::new()
                 $netEaseLyricsCandidate = $null
 
@@ -5455,7 +5527,7 @@ try {
                             -Headers $netEaseLyricsHeaders `
                             -CacheRoot $netEaseLyricsCacheRoot
                         if ($null -ne $netEaseLyricsCandidate) {
-                            $domesticLyricsCandidates.Add($netEaseLyricsCandidate)
+                            $onlineLyricsCandidates.Add($netEaseLyricsCandidate)
                         }
                         else {
                             $lyricsAttemptDetails.Add('NetEase: no substantive lyrics')
@@ -5463,13 +5535,12 @@ try {
                     }
                     catch {
                         $lyricsAttemptDetails.Add("NetEase error: $($_.Exception.Message)")
-                        Write-Warning ("Lyrics {0:D2}: NetEase lookup failed; trying QQ Music. {1}" -f $track.Number, $_.Exception.Message)
+                        Write-Warning ("Lyrics {0:D2}: NetEase lookup failed; continuing with the next lyrics source. {1}" -f $track.Number, $_.Exception.Message)
                     }
                 }
 
-                $netEaseHasChineseTranslation = $null -ne $netEaseLyricsCandidate -and
-                    (Get-ObjectProperty -Object $netEaseLyricsCandidate -Name 'HasChineseTranslation') -eq $true
-                if (-not $netEaseHasChineseTranslation -and -not $NoQQMusic -and
+                if (-not (Test-LyricsCandidatesHaveChineseContent -Candidates @($onlineLyricsCandidates)) -and
+                    -not $NoQQMusic -and
                     -not [string]::IsNullOrWhiteSpace([string] $track.QQMusicTrackMid)) {
                     try {
                         $qqMusicLyricsCandidate = Resolve-QQMusicLyrics `
@@ -5478,7 +5549,7 @@ try {
                             -Headers $qqMusicLyricsHeaders `
                             -CacheRoot $qqMusicLyricsCacheRoot
                         if ($null -ne $qqMusicLyricsCandidate) {
-                            $domesticLyricsCandidates.Add($qqMusicLyricsCandidate)
+                            $onlineLyricsCandidates.Add($qqMusicLyricsCandidate)
                         }
                         else {
                             $lyricsAttemptDetails.Add('QQ Music: no substantive lyrics')
@@ -5490,61 +5561,73 @@ try {
                     }
                 }
 
-                $translatedCandidates = @($domesticLyricsCandidates | Where-Object {
-                    (Get-ObjectProperty -Object $_ -Name 'HasChineseTranslation') -eq $true -and
-                    (Get-ObjectProperty -Object $_ -Name 'Instrumental') -ne $true
-                })
-                $lyricalCandidates = @($domesticLyricsCandidates | Where-Object {
-                    (Get-ObjectProperty -Object $_ -Name 'Instrumental') -ne $true
-                })
-                $instrumentalCandidates = @($domesticLyricsCandidates | Where-Object {
-                    (Get-ObjectProperty -Object $_ -Name 'Instrumental') -eq $true
-                })
-                if ($translatedCandidates.Count -gt 0) {
-                    $lyricsResult = $translatedCandidates[0]
-                    $lyricsStatus = 'found'
-                    $lyricsDetail = "$($lyricsResult.Source) selected with Chinese translation"
-                }
-                elseif ($lyricalCandidates.Count -gt 0) {
-                    $lyricsResult = $lyricalCandidates[0]
-                    $lyricsStatus = 'found'
-                    $lyricsDetail = "$($lyricsResult.Source) selected; no Chinese translation was available"
-                }
-                elseif ($instrumentalCandidates.Count -gt 0) {
-                    $lyricsResult = $instrumentalCandidates[0]
-                    $lyricsStatus = 'instrumental'
-                    $lyricsDetail = "$($lyricsResult.Source) marked this track as instrumental"
-                }
-
-                if ($null -eq $lyricsResult) {
+                $lyricsResolution = $null
+                if (-not (Test-LyricsCandidatesHaveChineseContent -Candidates @($onlineLyricsCandidates))) {
                     try {
                         $durationSeconds = [int] [Math]::Round($track.LengthBytes / 176400.0)
                         $lyricsResolution = Resolve-LrcLibLyrics -Title $track.Title -Artist $lookupArtist -Album $albumTitle -DurationSeconds $durationSeconds -CacheRoot $lyricsCacheRoot -Headers $lyricsHeaders
-                        $lyricsResult = $lyricsResolution.Lyrics
-                        $lyricsStatus = [string] $lyricsResolution.Status
-                        $lyricsDetail = [string] $lyricsResolution.Detail
-                        if ($null -eq $lyricsResult -and
+                        $lrcLibLyricsCandidate = $lyricsResolution.Lyrics
+                        if ($null -eq $lrcLibLyricsCandidate -and
                             -not [string]::IsNullOrWhiteSpace([string] $track.MusicBrainzTitle) -and
                             (ConvertTo-MatchText $track.MusicBrainzTitle) -ne (ConvertTo-MatchText $track.Title)) {
                             $fallbackArtist = if (-not [string]::IsNullOrWhiteSpace([string] $track.MusicBrainzArtist)) { $track.MusicBrainzArtist } else { $lookupArtist }
                             $fallbackResolution = Resolve-LrcLibLyrics -Title $track.MusicBrainzTitle -Artist $fallbackArtist -Album $albumTitle -DurationSeconds $durationSeconds -CacheRoot $lyricsCacheRoot -Headers $lyricsHeaders
                             if ($null -ne $fallbackResolution.Lyrics) {
-                                $lyricsResult = $fallbackResolution.Lyrics
-                                $lyricsStatus = [string] $fallbackResolution.Status
-                                $lyricsDetail = "MusicBrainz-title LRCLIB fallback: $($fallbackResolution.Detail)"
+                                $lrcLibLyricsCandidate = $fallbackResolution.Lyrics
+                                $lyricsResolution = [pscustomobject]@{
+                                    Lyrics = $lrcLibLyricsCandidate
+                                    Status = [string] $fallbackResolution.Status
+                                    Detail = "MusicBrainz-title LRCLIB fallback: $($fallbackResolution.Detail)"
+                                }
                             }
                         }
-                        if ($lyricsAttemptDetails.Count -gt 0) {
-                            $lyricsDetail = "$lyricsDetail; domestic attempts: $($lyricsAttemptDetails -join ' | ')"
+                        if ($null -ne $lrcLibLyricsCandidate) {
+                            $onlineLyricsCandidates.Add($lrcLibLyricsCandidate)
+                        }
+                        elseif ($onlineLyricsCandidates.Count -gt 0 -and
+                            $null -ne $lyricsResolution -and
+                            -not [string]::IsNullOrWhiteSpace([string] $lyricsResolution.Detail)) {
+                            $lyricsAttemptDetails.Add("LRCLIB: $($lyricsResolution.Detail)")
                         }
                     }
                     catch {
-                        $lyricsStatus = 'network_error'
-                        $lyricsDetail = $_.Exception.Message
-                        if ($lyricsAttemptDetails.Count -gt 0) {
-                            $lyricsDetail += "; domestic attempts: $($lyricsAttemptDetails -join ' | ')"
+                        $lyricsAttemptDetails.Add("LRCLIB error: $($_.Exception.Message)")
+                        Write-Warning ("Lyrics {0:D2}: LRCLIB lookup failed; preserving any earlier platform lyrics. {1}" -f $track.Number, $_.Exception.Message)
+                    }
+                }
+
+                $preferredLyrics = Select-PreferredLyricsCandidate -Candidates @($onlineLyricsCandidates)
+                if ($null -ne $preferredLyrics) {
+                    $lyricsResult = $preferredLyrics.Lyrics
+                    if ($preferredLyrics.Selection -eq 'Instrumental') {
+                        $lyricsStatus = 'instrumental'
+                        $lyricsDetail = "$($lyricsResult.Source) marked this track as instrumental"
+                    }
+                    else {
+                        $lyricsStatus = 'found'
+                        $lyricsDetail = if ($preferredLyrics.Selection -eq 'Chinese') {
+                            "$($lyricsResult.Source) selected with Chinese lyrics or translation"
                         }
-                        Write-Warning ("Lyrics {0:D2}: all online lyrics sources failed; continuing with the next track. {1}" -f $track.Number, $lyricsDetail)
+                        else {
+                            "$($lyricsResult.Source) selected for AI/Google Chinese translation fallback"
+                        }
+                    }
+                }
+                elseif ($null -ne $lyricsResolution) {
+                    $lyricsStatus = [string] $lyricsResolution.Status
+                    $lyricsDetail = [string] $lyricsResolution.Detail
+                }
+                elseif ($lyricsAttemptDetails.Count -gt 0) {
+                    $lyricsStatus = 'network_error'
+                    $lyricsDetail = 'No online lyrics source returned a usable result'
+                }
+
+                if ($lyricsAttemptDetails.Count -gt 0) {
+                    if ([string]::IsNullOrWhiteSpace($lyricsDetail)) {
+                        $lyricsDetail = $lyricsAttemptDetails -join ' | '
+                    }
+                    else {
+                        $lyricsDetail += "; source attempts: $($lyricsAttemptDetails -join ' | ')"
                     }
                 }
             }
@@ -5682,7 +5765,7 @@ try {
             Write-Host "Lyrics metadata unavailable: $($lyricsStatusCounts.metadata_unavailable)"
         }
         $lyricsJson = [ordered]@{
-            provider_priority = 'Local override; NetEase Chinese translation; QQ Music Chinese translation; NetEase; QQ Music; LRCLIB; configured Google/OpenAI/Anthropic Chinese translation fallback'
+            provider_priority = 'Local override; NetEase; QQ Music; LRCLIB; configured OpenAI/Anthropic AI translation; Google Cloud Translation fallback'
             machine_translation_mode = $lyricsTranslationSettings.Mode
             machine_translation_providers = @($lyricsTranslationSettings.Providers)
             tracks   = @($lyricsManifest)
