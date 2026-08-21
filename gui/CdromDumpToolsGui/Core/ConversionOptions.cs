@@ -3,7 +3,7 @@ namespace CdromDumpToolsGui.Core;
 public sealed class ConversionOptions
 {
     public const string DefaultMusicBrainzUserAgent =
-        "BinToAudioWindows/2.7.0 (https://github.com/Gavin-LHX/cdrom-dump-tools)";
+        "BinToAudioWindows/2.8.0 (https://github.com/Gavin-LHX/cdrom-dump-tools)";
 
     public string BinPath { get; set; } = string.Empty;
     public string Format { get; set; } = "flac";
