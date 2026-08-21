@@ -7,6 +7,7 @@ var checks = new (string Name, Action Run)[]
     ("ArgumentList preserves special paths", CheckArgumentListSpecialPaths),
     ("Windows PowerShell UTF-8 wrapper is safely quoted", CheckWindowsPowerShellWrapper),
     ("output path parsing", CheckOutputPathParsing),
+    ("conversion progress parsing", CheckConversionProgressParsing),
     ("unused output suggestion", CheckUnusedOutputSuggestion),
     ("explicit output validation", CheckExplicitOutputValidation),
     ("default output prediction", CheckDefaultOutputPrediction),
@@ -271,6 +272,52 @@ static void CheckOutputPathParsing()
         "completion marker must begin the trimmed line");
     True(!OutputPathResolver.TryParseFromLogLine("Done. Converted tracks are in:", out _),
         "empty completion path must be rejected");
+}
+
+static void CheckConversionProgressParsing()
+{
+    True(ConversionProgressParser.TryParse(
+        "Converting track 3/16 -> 03 - title.flac",
+        out var trackProgress), "valid track progress was not parsed");
+    Equal(ConversionProgressKind.TrackStarted, trackProgress!.Kind, "track event kind differs");
+    Equal(3, trackProgress.Current, "track current differs");
+    Equal(16, trackProgress.Total, "track total differs");
+    Equal("03 - title.flac", trackProgress.Detail, "track detail differs");
+
+    True(ConversionProgressParser.TryParse("Tracks:      16", out var trackCount),
+        "track count was not parsed");
+    Equal(ConversionProgressKind.TrackCount, trackCount!.Kind, "track-count event kind differs");
+    Equal(16, trackCount.Total, "track count differs");
+
+    True(ConversionProgressParser.TryParse(
+        "Lyrics 03: synced bilingual (Chinese translation) (NetEase)",
+        out var lyricsProgress), "lyrics progress was not parsed");
+    Equal(ConversionProgressKind.Lyrics, lyricsProgress!.Kind, "lyrics event kind differs");
+    Equal(3, lyricsProgress.Current, "lyrics track differs");
+
+    True(ConversionProgressParser.TryParse(
+        "Trying cover source: Cover Art Archive release",
+        out var coverProgress), "cover progress was not parsed");
+    Equal(ConversionProgressKind.Cover, coverProgress!.Kind, "cover event kind differs");
+    Equal("Cover Art Archive release", coverProgress.Detail, "cover source differs");
+
+    True(ConversionProgressParser.TryParse(
+        "MusicBrainz Disc ID: example",
+        out var metadataProgress), "metadata progress was not parsed");
+    Equal(ConversionProgressKind.Metadata, metadataProgress!.Kind, "metadata event kind differs");
+
+    foreach (var invalid in new[]
+             {
+                 "Converting track 0/16 -> x.flac",
+                 "Converting track 17/16 -> x.flac",
+                 "Converting track 1/0 -> x.flac",
+                 "WARNING: Converting track 1/16 -> x.flac",
+                 "Converting track 1/16",
+                 string.Empty,
+             })
+    {
+        True(!ConversionProgressParser.TryParse(invalid, out _), $"invalid progress was accepted: {invalid}");
+    }
 }
 
 static void CheckUnusedOutputSuggestion()

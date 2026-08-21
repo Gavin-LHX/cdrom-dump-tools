@@ -10,11 +10,12 @@
 - 输出无损 FLAC 或 WAV。
 - 控制元数据、封面、歌词、网易云音乐和 QQ 音乐查询。
 - 选择网易云/QQ 音乐标签优先级、歌词机器翻译回退顺序和 OpenAI/Anthropic API 格式。
-- 通过主界面的“模型 / API Key…”打开独立设置窗口：可填写 OpenAI Chat Completions 兼容接口、Anthropic Messages 兼容接口和 Google Cloud Translation Basic v2 所需字段，也可选用内置 Prompt 或外部 Prompt 文件。
+- 常用转换、歌词/AI 和高级选项分成三个中文页签；界面显示面向用户的说明，不直接暴露 `NetEaseFirst`、`AIThenGoogle` 等内部参数值。
+- 通过主界面的“配置模型与 API Key…”打开独立设置窗口：可填写 OpenAI Chat Completions 兼容接口、Anthropic Messages 兼容接口和 Google Cloud Translation Basic v2 所需字段，也可选用内置 Prompt 或外部 Prompt 文件。
 - 设置 MusicBrainz 发行版本序号和 User-Agent 等高级参数。
 - 转换前检查路径与参数，并以参数数组启动 PowerShell，不通过 `cmd.exe` 拼接执行命令。
-- 命令预览自动换行，只保留纵向滚动条；API Key 不会进入预览内容。
-- 实时显示标准输出和错误输出；可取消正在运行的转换。
+- 运行日志与命令预览使用独立页签；日志可复制或清空，命令可一键复制。命令自动换行、只保留纵向滚动条，API Key 不会进入预览内容。
+- 实时显示在线查询阶段、曲目 `X/Y`、进度条和耗时；可停止正在运行的完整进程树。转换期间会冻结本次任务参数，避免界面预览与实际命令不一致。
 - 从转换日志识别真实输出目录，成功后可直接打开。
 - 保存常用输入路径、界面选项和非敏感 AI 配置到 `%LOCALAPPDATA%\CdromDumpToolsGui\settings.json`。一次性的最终输出目录不会持久化；API Key 是否保存由“记住 API Key”选项控制，保存时只写入当前 Windows 用户 DPAPI 加密后的密文。
 
@@ -41,9 +42,9 @@ cdrom-dump-tools-版本-windows-x64.exe
 
 1. 从 GitHub Release 下载 Windows x64 EXE 并直接运行。
 2. 选择或拖入 `.bin`；同目录同名 `.toc` 存在时可直接使用，也可手动指定。
-3. 选择 FLAC/WAV 和所需的元数据、封面、歌词选项；需要机器翻译回退时，可点击“模型 / API Key…”直接配置服务。
-4. 将“最终输出目录”留空以自动命名，或指定一个尚不存在的完整目标目录。
-5. 开始转换，在日志区确认匹配来源和进度。转换成功后可用“打开输出目录”进入实际结果目录。
+3. 在“转换与标签”“歌词与 AI 翻译”页签中选择所需项目；需要机器翻译回退时，可点击“配置模型与 API Key…”直接配置服务。
+4. 将“自定义输出目录”留空以自动命名，或指定一个尚不存在的完整目标目录；FFmpeg、`.env`、候选序号和 User-Agent 位于“高级设置”。
+5. 开始转换，在进度区查看当前在线查询阶段、曲目 `X/Y` 和耗时；“运行日志”“命令预览”页签可随时切换。转换成功后可用“打开输出目录”进入实际结果目录。
 
 ### 输出目录语义
 
@@ -59,7 +60,7 @@ cdrom-dump-tools-版本-windows-x64.exe
 
 在线元数据和平台已有歌词不需要 AI Key。只有在网易云音乐、QQ 音乐和 LRCLIB 都没有中文歌词，并启用 AI/Google 翻译回退时，才需要相应配置。
 
-日常使用可直接点击主界面的“模型 / API Key…”：
+日常使用可直接点击主界面的“配置模型与 API Key…”：
 
 - **OpenAI / 兼容接口**：API Key、Base URL、模型，以及可选 Organization ID、Project ID；请求使用 Chat Completions 兼容格式，脚本会在 Base URL 后补 `/chat/completions`。
 - **Anthropic / 兼容接口**：API Key、Base URL、模型、API Version 和 Max Tokens；请求使用 Messages 兼容格式，脚本会在 Base URL 后补 `/messages`。

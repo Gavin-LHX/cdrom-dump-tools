@@ -73,9 +73,9 @@
 
 ### Windows 图形界面
 
-[`gui/`](gui/README.md) 提供重新设计的 .NET 8 WinForms 前端。正式发布的自包含单 EXE 嵌入与根脚本同源的 PowerShell 转换引擎，但不重新实现其业务逻辑。界面支持选择/拖放 BIN 与 TOC、FLAC/WAV、FFmpeg、自动或指定输出目录，以及元数据、封面、歌词、国内源优先级和 AI/Google 翻译回退等参数；主界面的“模型 / API Key…”可直接配置 OpenAI Chat Completions 兼容接口、Anthropic Messages 兼容接口、Google Cloud Translation Basic v2 和可选 Prompt 文件。运行时会显示实时日志，并从日志识别经专辑元数据命名后的实际输出目录。
+[`gui/`](gui/README.md) 提供重新设计的 .NET 8 WinForms 前端。正式发布的自包含单 EXE 嵌入与根脚本同源的 PowerShell 转换引擎，但不重新实现其业务逻辑。常用转换、歌词/AI 和高级设置采用分组页签，选项使用中文说明和正向功能开关；主界面的“配置模型与 API Key…”可直接配置 OpenAI Chat Completions 兼容接口、Anthropic Messages 兼容接口、Google Cloud Translation Basic v2 和可选 Prompt 文件。运行时会显示在线查询阶段、曲目 `X/Y`、进度和耗时，并从日志识别经专辑元数据命名后的实际输出目录。
 
-命令预览会自动换行且没有横向滚动条，并且不会显示 API Key。为已启用服务填写的 GUI 翻译配置通过子 PowerShell 进程环境覆盖 `.env`，未启用服务的界面默认值不会遮蔽 `.env`；脚本解析后会先清除这些环境变量，再启动 FFmpeg 等子进程。Key 可选择仅保留在当前会话内存，或使用 Windows 当前用户 DPAPI 加密后保存到 `%LOCALAPPDATA%\CdromDumpToolsGui\settings.json`；明文不会进入参数、预览、日志、EXE 或 Release。
+运行日志和命令预览位于独立页签；日志可复制或清空，命令可一键复制。命令自动换行且没有横向滚动条，也不会显示 API Key。为已启用服务填写的 GUI 翻译配置通过子 PowerShell 进程环境覆盖 `.env`，未启用服务的界面默认值不会遮蔽 `.env`；脚本解析后会先清除这些环境变量，再启动 FFmpeg 等子进程。Key 可选择仅保留在当前会话内存，或使用 Windows 当前用户 DPAPI 加密后保存到 `%LOCALAPPDATA%\CdromDumpToolsGui\settings.json`；明文不会进入参数、预览、日志、EXE 或 Release。
 
 在仓库中构建或发布 GUI：
 
@@ -290,11 +290,11 @@ MusicBrainz 要求客户端不超过每秒一次请求。脚本会在所有 Musi
 
 机器翻译默认是条件式回退，不会替代平台已有的中文歌词或译文。脚本先按网易云 → QQ 音乐 → LRCLIB 获取结果；网易云或 QQ 只有外文原词时仍会继续查后续来源。三者都没有中文时，才把顺序中最早的有效非纯音乐原词交给 AI → Google 回退链。任何翻译接口失败都只会保留原歌词并继续转换音频。
 
-GUI 用户可点击主界面的“模型 / API Key…”直接设置：OpenAI / 兼容接口提供 API Key、Base URL、模型和可选 Organization/Project ID，使用 Chat Completions 兼容格式；Anthropic / 兼容接口提供 API Key、Base URL、模型、API Version 和 Max Tokens，使用 Messages 兼容格式；Google 页提供 Cloud Translation Basic v2 的 API Key 与 Base URL。Prompt 留空时使用内置“信、达、雅”版本，也可选择本地 UTF-8 Prompt 文件覆盖。
+GUI 用户可点击主界面的“配置模型与 API Key…”直接设置：OpenAI / 兼容接口提供 API Key、Base URL、模型和可选 Organization/Project ID，使用 Chat Completions 兼容格式；Anthropic / 兼容接口提供 API Key、Base URL、模型、API Version 和 Max Tokens，使用 Messages 兼容格式；Google 页提供 Cloud Translation Basic v2 的 API Key 与 Base URL。Prompt 留空时使用内置“信、达、雅”版本，也可选择本地 UTF-8 Prompt 文件覆盖。
 
 为某个服务填写 Key、模型或自定义地址后，该服务的 GUI 字段不会拼进命令行，而是仅注入本次子 PowerShell 进程环境，并优先于 `.env` 同名值；未启用服务在界面中显示的默认值不会遮蔽 `.env`。PowerShell 将这些值解析到设置对象后立即清除相关进程环境变量，然后才会启动 FFmpeg 等子进程。API Key 不会出现在参数、命令预览、转换日志、EXE 或 GitHub Release 中。
 
-在“模型 / API Key…”中勾选“记住 API Key”时，Key 会用 Windows 当前用户 DPAPI 加密，`%LOCALAPPDATA%\CdromDumpToolsGui\settings.json` 只保存密文；不同 Windows 用户通常无法解密。取消勾选时不持久化 Key，只在当前 GUI 会话内存中保留，并在转换时通过上述临时子进程环境传递。Base URL、模型、Organization/Project ID、API Version、Max Tokens 和 Prompt 文件路径属于非密钥设置，会正常保存。
+在“配置模型与 API Key…”中勾选“记住 API Key”时，Key 会用 Windows 当前用户 DPAPI 加密，`%LOCALAPPDATA%\CdromDumpToolsGui\settings.json` 只保存密文；不同 Windows 用户通常无法解密。取消勾选时不持久化 Key，只在当前 GUI 会话内存中保留，并在转换时通过上述临时子进程环境传递。Base URL、模型、Organization/Project ID、API Version、Max Tokens 和 Prompt 文件路径属于非密钥设置，会正常保存。
 
 `.env` 仍是命令行和高级回退配置。GitHub Release 资产和仓库都提供空白 `.env.example`；命令行脚本首次使用时可在 `bin_to_audio_windows.ps1` 所在目录执行：
 
