@@ -13,12 +13,13 @@ internal sealed class MainForm : Form
     private readonly TextBox _tocTextBox = NewPathTextBox("可选；留空时脚本查找同名 .toc");
     private readonly TextBox _outputTextBox = NewPathTextBox("留空时按识别出的专辑自动命名");
     private readonly TextBox _ffmpegTextBox = NewPathTextBox("可选；留空时自动查找 ffmpeg.exe");
-    private readonly TextBox _envTextBox = NewPathTextBox("可选；只保存路径，不读取或保存 API Key");
+    private readonly TextBox _envTextBox = NewPathTextBox("可选；高级用户可继续使用 EXE 同目录的 .env");
     private readonly TextBox _userAgentTextBox = new() { Dock = DockStyle.Fill, PlaceholderText = ConversionOptions.DefaultMusicBrainzUserAgent };
     private readonly ComboBox _formatComboBox = NewChoiceCombo("flac", "wav");
     private readonly ComboBox _domesticPriorityComboBox = NewChoiceCombo("NetEaseFirst", "QQMusicFirst");
     private readonly ComboBox _lyricsFallbackComboBox = NewChoiceCombo("Auto", "None", "AIThenGoogle", "GoogleThenAI", "AI", "Google");
     private readonly ComboBox _aiProviderComboBox = NewChoiceCombo("Auto", "OpenAI", "Anthropic");
+    private readonly Button _aiSettingsButton = new() { Text = "模型 / API Key…", AutoSize = true, Margin = new Padding(6, 0, 0, 0) };
     private readonly NumericUpDown _releaseIndexInput = new() { Minimum = 0, Maximum = 1000, Dock = DockStyle.Fill };
     private readonly CheckBox _noMetadataCheckBox = NewCheckBox("不联网写元数据");
     private readonly CheckBox _noCoverCheckBox = NewCheckBox("不下载封面");
@@ -42,9 +43,9 @@ internal sealed class MainForm : Form
         Dock = DockStyle.Fill,
         ReadOnly = true,
         Multiline = true,
-        ScrollBars = ScrollBars.Horizontal,
-        WordWrap = false,
-        Height = 50,
+        ScrollBars = ScrollBars.Vertical,
+        WordWrap = true,
+        MinimumSize = new Size(0, 64),
         BackColor = SystemColors.ControlLightLight,
     };
     private readonly Button _runButton = new() { Text = "开始转换", AutoSize = true, Padding = new Padding(14, 5, 14, 5) };
@@ -59,17 +60,25 @@ internal sealed class MainForm : Form
     private bool _allowClose;
     private string? _reportedOutputDirectory;
     private string? _lastOutputDirectory;
+    private AiTranslationConfiguration _aiConfiguration;
+    private StoredAiSettings _storedAiSettings;
+    private bool _rememberAiKeys;
+    private readonly bool _hadUnreadableSavedSecret;
 
     public MainForm()
     {
         _settings = AppSettingsStore.Load();
+        _storedAiSettings = (_settings.AiSettings ?? new StoredAiSettings()).Clone();
+        _rememberAiKeys = _storedAiSettings.RememberApiKeys;
+        _aiConfiguration = AiSettingsPersistence.Load(_storedAiSettings, out _hadUnreadableSavedSecret);
 
         Text = "CD-ROM Dump Tools";
         Font = new Font("Microsoft YaHei UI", 9F);
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(900, 720);
-        ClientSize = new Size(1150, 900);
+        AutoScaleDimensions = new SizeF(96F, 96F);
         AutoScaleMode = AutoScaleMode.Dpi;
+        MinimumSize = new Size(900, 820);
+        ClientSize = new Size(1150, 960);
         AllowDrop = true;
 
         BuildInterface();
@@ -78,6 +87,10 @@ internal sealed class MainForm : Form
         _noPauseCheckBox.Enabled = false;
         WireEvents();
         UpdateCommandPreview();
+        if (_hadUnreadableSavedSecret)
+        {
+            AppendLog("警告：至少一个已保存的 API Key 无法由当前 Windows 用户解密，已将该 Key 留空。", isError: true);
+        }
     }
 
     private void BuildInterface()
@@ -86,13 +99,33 @@ internal sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 4,
+            RowCount = 2,
             Padding = new Padding(12),
         };
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        var scrollHost = new Panel
+        {
+            Dock = DockStyle.Fill,
+            AutoScroll = true,
+            Margin = Padding.Empty,
+        };
+        var content = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 1,
+            RowCount = 3,
+            Margin = Padding.Empty,
+        };
+        content.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        content.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        content.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+        scrollHost.Controls.Add(content);
+        scrollHost.ClientSizeChanged += (_, _) =>
+            content.MinimumSize = new Size(0, Math.Max(0, scrollHost.ClientSize.Height));
 
         var inputGroup = new GroupBox
         {
@@ -117,7 +150,7 @@ internal sealed class MainForm : Form
         AddPathRow(paths, 1, "TOC 文件", _tocTextBox, BrowseToc, () => _tocTextBox.Clear());
         AddPathRow(paths, 2, "最终输出目录", _outputTextBox, BrowseOutputParent, () => _outputTextBox.Clear(), "选择父目录后会生成一个尚不存在的最终目录；留空则由脚本按专辑自动命名。");
         AddPathRow(paths, 3, "FFmpeg", _ffmpegTextBox, BrowseFfmpeg, () => _ffmpegTextBox.Clear());
-        AddPathRow(paths, 4, ".env 文件", _envTextBox, BrowseEnvironmentFile, () => _envTextBox.Clear(), "仅把文件路径传给脚本；GUI 不读取、显示或保存其中的 API Key。");
+        AddPathRow(paths, 4, ".env（高级）", _envTextBox, BrowseEnvironmentFile, () => _envTextBox.Clear(), "仅把文件路径传给脚本；日常使用可直接点击“模型 / API Key…”配置。");
         inputGroup.Controls.Add(paths);
 
         var optionsGroup = new GroupBox
@@ -143,7 +176,12 @@ internal sealed class MainForm : Form
         AddLabeledControl(options, 0, 0, "输出格式", _formatComboBox);
         AddLabeledControl(options, 0, 2, "国内源优先级", _domesticPriorityComboBox);
         AddLabeledControl(options, 1, 0, "歌词翻译回退", _lyricsFallbackComboBox);
-        AddLabeledControl(options, 1, 2, "AI 翻译服务", _aiProviderComboBox);
+        var aiProviderPanel = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2, Margin = Padding.Empty };
+        aiProviderPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        aiProviderPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        aiProviderPanel.Controls.Add(_aiProviderComboBox, 0, 0);
+        aiProviderPanel.Controls.Add(_aiSettingsButton, 1, 0);
+        AddLabeledControl(options, 1, 2, "AI 翻译服务", aiProviderPanel);
         AddLabeledControl(options, 2, 0, "候选专辑序号", _releaseIndexInput);
         AddLabeledControl(options, 2, 2, "MusicBrainz UA", _userAgentTextBox);
 
@@ -178,19 +216,32 @@ internal sealed class MainForm : Form
         options.SetColumnSpan(hint, 4);
         optionsGroup.Controls.Add(options);
 
-        var middle = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
+        var middle = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2,
+            MinimumSize = new Size(0, 300),
+        };
         middle.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-        middle.RowStyles.Add(new RowStyle(SizeType.Absolute, 82F));
-        var logGroup = new GroupBox { Text = "实时日志", Dock = DockStyle.Fill, Padding = new Padding(8) };
+        middle.RowStyles.Add(new RowStyle(SizeType.Absolute, 128F));
+        var logGroup = new GroupBox
+        {
+            Text = "实时日志",
+            Dock = DockStyle.Fill,
+            Padding = new Padding(8),
+            MinimumSize = new Size(0, 170),
+        };
         logGroup.Controls.Add(_logTextBox);
         middle.Controls.Add(logGroup, 0, 0);
 
         var previewGroup = new GroupBox
         {
-            Text = "命令预览（不会读取或显示 .env 内的 API Key）",
+            Text = "命令预览（不会显示 GUI 或 .env 中的 API Key）",
             Dock = DockStyle.Fill,
             Padding = new Padding(8),
             Margin = new Padding(0, 8, 0, 0),
+            MinimumSize = new Size(0, 112),
         };
         previewGroup.Controls.Add(_previewTextBox);
         middle.Controls.Add(previewGroup, 0, 1);
@@ -207,10 +258,11 @@ internal sealed class MainForm : Form
         _runButton.FlatStyle = FlatStyle.Flat;
         actionPanel.Controls.AddRange(new Control[] { _runButton, _cancelButton, _openOutputButton });
 
-        root.Controls.Add(inputGroup, 0, 0);
-        root.Controls.Add(optionsGroup, 0, 1);
-        root.Controls.Add(middle, 0, 2);
-        root.Controls.Add(actionPanel, 0, 3);
+        content.Controls.Add(inputGroup, 0, 0);
+        content.Controls.Add(optionsGroup, 0, 1);
+        content.Controls.Add(middle, 0, 2);
+        root.Controls.Add(scrollHost, 0, 0);
+        root.Controls.Add(actionPanel, 0, 1);
 
         var statusStrip = new StatusStrip();
         statusStrip.Items.Add(_statusLabel);
@@ -226,6 +278,7 @@ internal sealed class MainForm : Form
         _runButton.Click += async (_, _) => await RunConversionAsync();
         _cancelButton.Click += (_, _) => CancelConversion();
         _openOutputButton.Click += (_, _) => OpenDirectorySafely(_lastOutputDirectory);
+        _aiSettingsButton.Click += (_, _) => OpenAiSettings();
 
         foreach (var textBox in new[] { _binTextBox, _tocTextBox, _outputTextBox, _ffmpegTextBox, _envTextBox, _userAgentTextBox })
         {
@@ -246,8 +299,9 @@ internal sealed class MainForm : Form
         }
 
         _toolTip.SetToolTip(_releaseIndexInput, "0 表示非交互地使用第 1 个候选；1..1000 指定候选序号。");
-        _toolTip.SetToolTip(_envTextBox, "GUI 只保存此路径，不会把 API Key 写入设置或命令预览。");
+        _toolTip.SetToolTip(_envTextBox, "高级兼容入口：GUI 只保存路径；日常使用请直接点击“模型 / API Key…”。");
         _toolTip.SetToolTip(_noPauseCheckBox, "GUI 始终传入 -NoPause，防止后台进程等待键盘输入。");
+        _toolTip.SetToolTip(_aiSettingsButton, "直接配置 OpenAI、Anthropic、Google 的模型、兼容端点和 API Key。");
     }
 
     private void LoadSettingsIntoControls()
@@ -296,6 +350,7 @@ internal sealed class MainForm : Form
         ReleaseIndex = Decimal.ToInt32(_releaseIndexInput.Value),
         MusicBrainzUserAgent = _userAgentTextBox.Text.Trim(),
         OpenOutputOnSuccess = _openOnSuccessCheckBox.Checked,
+        AiSettings = _storedAiSettings.Clone(),
     };
 
     private ConversionOptions CaptureConversionOptions()
@@ -305,9 +360,11 @@ internal sealed class MainForm : Form
         {
             BinPath = settings.BinPath,
             TocPath = EmptyToNull(settings.TocPath),
-            OutputDirectory = EmptyToNull(settings.OutputDirectory),
+            // The explicit output path is deliberately not persisted because it is a
+            // one-shot destination. Read the current control value for this run.
+            OutputDirectory = EmptyToNull(_outputTextBox.Text.Trim()),
             FfmpegPath = EmptyToNull(settings.FfmpegPath),
-            EnvPath = EmptyToNull(settings.EnvPath),
+            EnvPath = EnvironmentFileResolver.Resolve(EmptyToNull(settings.EnvPath), AppContext.BaseDirectory),
             Format = settings.Format,
             NoMetadata = settings.NoMetadata,
             NoCover = settings.NoCover,
@@ -330,9 +387,38 @@ internal sealed class MainForm : Form
             return;
         }
 
-        var scriptPath = ScriptLocator.FindConverterScript(AppContext.BaseDirectory);
+        EmbeddedConverterScript.VerifiedExecutionLease scriptLease;
+        try
+        {
+            scriptLease = EmbeddedConverterScript.AcquireVerifiedExecutionLease();
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(
+                this,
+                "无法安全展开或校验内置转换脚本：\n" + exception.Message,
+                "无法开始转换",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+            return;
+        }
+        using var verifiedScriptLease = scriptLease;
+        var scriptPath = verifiedScriptLease.ScriptPath;
         var powerShellPath = PowerShellLocator.FindExecutable();
         var options = CaptureConversionOptions();
+        var useMachineTranslationConfiguration = AiTranslationEnvironment.ShouldApply(options);
+        try
+        {
+            if (useMachineTranslationConfiguration)
+            {
+                AiTranslationEnvironment.Validate(_aiConfiguration);
+            }
+        }
+        catch (Exception exception) when (exception is ArgumentException or IOException or NotSupportedException)
+        {
+            MessageBox.Show(this, exception.Message, "AI 设置无效", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
         if (!ValidateInputs(scriptPath, powerShellPath, options, out var validationError))
         {
             MessageBox.Show(this, validationError, "无法开始转换", MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -358,9 +444,16 @@ internal sealed class MainForm : Form
         Process? process = null;
         try
         {
-            var startInfo = ConverterCommand.CreateStartInfo(powerShellPath!, scriptPath!, options);
+            var startInfo = ConverterCommand.CreateStartInfo(
+                powerShellPath!,
+                scriptPath!,
+                options,
+                useMachineTranslationConfiguration ? _aiConfiguration : null);
             AppendLog("PowerShell: " + powerShellPath);
             AppendLog("命令: " + ConverterCommand.CreateSafePreview(powerShellPath!, startInfo.ArgumentList.ToArray()));
+            AppendLog("AI 配置: " + (useMachineTranslationConfiguration
+                ? AiTranslationEnvironment.CreateSafeSummary(_aiConfiguration)
+                : "本次转换未启用机器翻译"));
             AppendLog(string.Empty);
 
             process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
@@ -609,6 +702,33 @@ internal sealed class MainForm : Form
         }
     }
 
+    private void OpenAiSettings()
+    {
+        using var dialog = new AiSettingsForm(_aiConfiguration, _rememberAiKeys);
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        try
+        {
+            var updatedConfiguration = dialog.Configuration.Clone();
+            var updatedStoredSettings = AiSettingsPersistence.Save(updatedConfiguration, dialog.RememberApiKeys);
+            _aiConfiguration = updatedConfiguration;
+            _rememberAiKeys = dialog.RememberApiKeys;
+            _storedAiSettings = updatedStoredSettings;
+            AppSettingsStore.Save(CaptureSettings());
+            _statusLabel.Text = "AI 设置已保存";
+            UpdateCommandPreview();
+        }
+        catch (Exception exception) when (exception is ArgumentException or IOException or UnauthorizedAccessException
+                                          or System.Security.Cryptography.CryptographicException
+                                          or System.ComponentModel.Win32Exception)
+        {
+            MessageBox.Show(this, exception.Message, "无法保存 AI 设置", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
     private void BrowseOutputParent()
     {
         using var dialog = new FolderBrowserDialog
@@ -692,17 +812,16 @@ internal sealed class MainForm : Form
     {
         try
         {
-            var locatedScriptPath = ScriptLocator.FindConverterScript(AppContext.BaseDirectory);
+            var scriptPath = EmbeddedConverterScript.EnsureExtracted();
             var locatedPowerShellPath = PowerShellLocator.FindExecutable();
-            var scriptPath = locatedScriptPath ?? ScriptLocator.ScriptFileName;
             var powerShellPath = locatedPowerShellPath ?? "powershell.exe";
             var options = CaptureConversionOptions();
             if (string.IsNullOrWhiteSpace(options.BinPath))
             {
                 options.BinPath = Path.Combine(Environment.CurrentDirectory, "请选择-BIN.bin");
             }
-            var arguments = locatedScriptPath is not null && locatedPowerShellPath is not null
-                ? ConverterCommand.CreateStartInfo(locatedPowerShellPath, locatedScriptPath, options).ArgumentList.ToArray()
+            var arguments = locatedPowerShellPath is not null
+                ? ConverterCommand.CreateStartInfo(locatedPowerShellPath, scriptPath, options).ArgumentList.ToArray()
                 : ConverterCommand.BuildArguments(scriptPath, options);
             _previewTextBox.Text = ConverterCommand.CreateSafePreview(powerShellPath, arguments);
         }
@@ -720,7 +839,7 @@ internal sealed class MainForm : Form
     {
         if (scriptPath is null || !File.Exists(scriptPath))
         {
-            error = "找不到 bin_to_audio_windows.ps1。请把 GUI 放在仓库的 gui 目录中，或把脚本与程序一起发布。";
+            error = "内置 bin_to_audio_windows.ps1 未能安全展开或通过完整性校验。";
             return false;
         }
         if (powerShellPath is null || !File.Exists(powerShellPath))
@@ -777,6 +896,7 @@ internal sealed class MainForm : Form
         }
         _runButton.Enabled = !running;
         _cancelButton.Enabled = running;
+        _aiSettingsButton.Enabled = !running;
         _statusLabel.Text = status;
     }
 

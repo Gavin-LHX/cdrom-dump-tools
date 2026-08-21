@@ -10,9 +10,16 @@
     <AssemblyName>CdromDumpToolsGui</AssemblyName>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <PublishSingleFile Condition="'$(RuntimeIdentifier)' != ''">true</PublishSingleFile>
     <Version>2.7.0</Version>
     <Product>CD-ROM Dump Tools GUI</Product>
     <Description>Windows graphical interface for cdrom-dump-tools</Description>
   </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\bin_to_audio_windows.ps1"
+                      Link="Resources\bin_to_audio_windows.ps1"
+                      LogicalName="CdromDumpToolsGui.Resources.bin_to_audio_windows.ps1" />
+  </ItemGroup>
 
 </Project>

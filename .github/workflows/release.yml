@@ -18,9 +18,128 @@ jobs:
     permissions:
       contents: read
 
+  package-windows:
+    name: Build and test Windows release asset
+    needs: validate
+    runs-on: windows-2025
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up pinned .NET 8 SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 8.0.424
+
+      - name: Publish and smoke-test exact Windows asset
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_REF_NAME -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:[.-][0-9A-Za-z.-]+)?$') {
+              throw "Tag must be a SemVer-like value such as v2.7.0: $env:GITHUB_REF_NAME"
+          }
+
+          $version = $env:GITHUB_REF_NAME.Substring(1)
+          $project = '.\gui\CdromDumpToolsGui\CdromDumpToolsGui.csproj'
+          $publishDirectory = Join-Path $env:RUNNER_TEMP 'gui-publish'
+          $distDirectory = Join-Path $PWD 'dist'
+          $assetName = "cdrom-dump-tools-$version-windows-x64.exe"
+          $licenseAssetName = "cdrom-dump-tools-$version-dotnet-LICENSE.txt"
+          $noticesAssetName = "cdrom-dump-tools-$version-dotnet-THIRD-PARTY-NOTICES.txt"
+
+          dotnet restore $project --runtime win-x64
+          dotnet publish $project `
+            --configuration Release `
+            --runtime win-x64 `
+            --self-contained true `
+            --no-restore `
+            --output $publishDirectory `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:EnableCompressionInSingleFile=true `
+            -p:ContinuousIntegrationBuild=true `
+            -p:Version=$version `
+            -p:DebugSymbols=false `
+            -p:DebugType=None
+
+          $publishedFiles = @(Get-ChildItem -LiteralPath $publishDirectory -File)
+          if ($publishedFiles.Count -ne 1 -or $publishedFiles[0].Name -cne 'CdromDumpToolsGui.exe') {
+              $publishedFiles | Format-Table Name, Length -AutoSize
+              throw 'GUI publish output must contain exactly one CdromDumpToolsGui.exe file.'
+          }
+          if ($publishedFiles[0].Length -lt 1MB) {
+              throw 'Published GUI is unexpectedly small for a self-contained executable.'
+          }
+
+          $selfTest = Start-Process `
+            -FilePath $publishedFiles[0].FullName `
+            -ArgumentList '--self-test-embedded-script' `
+            -Wait `
+            -PassThru
+          if ($selfTest.ExitCode -ne 0) {
+              throw "Published GUI embedded-script self-test failed with exit code $($selfTest.ExitCode)."
+          }
+
+          $productVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($publishedFiles[0].FullName).ProductVersion
+          if ([string]::IsNullOrWhiteSpace($productVersion) -or !$productVersion.StartsWith($version, [StringComparison]::Ordinal)) {
+              throw "Published GUI product version '$productVersion' does not begin with tag version '$version'."
+          }
+
+          $null = New-Item -ItemType Directory -Path $distDirectory -Force
+          Copy-Item `
+            -LiteralPath $publishedFiles[0].FullName `
+            -Destination (Join-Path $distDirectory $assetName)
+
+          $dotnetExecutable = (Get-Command dotnet -ErrorAction Stop).Source
+          $candidateDotnetRoots = @()
+          if (![string]::IsNullOrWhiteSpace($env:DOTNET_ROOT)) {
+              $candidateDotnetRoots += [IO.Path]::GetFullPath($env:DOTNET_ROOT)
+          }
+          $candidateDotnetRoots += [IO.Path]::GetFullPath((Split-Path -Parent $dotnetExecutable))
+          $candidateDotnetRoots = @($candidateDotnetRoots | Select-Object -Unique)
+
+          $dotnetRoot = $candidateDotnetRoots | Where-Object {
+              (Test-Path -LiteralPath (Join-Path $_ 'LICENSE.txt') -PathType Leaf) -and
+              (Test-Path -LiteralPath (Join-Path $_ 'ThirdPartyNotices.txt') -PathType Leaf)
+          } | Select-Object -First 1
+          if ([string]::IsNullOrWhiteSpace($dotnetRoot)) {
+              throw "Could not find LICENSE.txt and ThirdPartyNotices.txt in the checked .NET roots: $($candidateDotnetRoots -join ', ')"
+          }
+
+          $dotnetLicense = Join-Path $dotnetRoot 'LICENSE.txt'
+          $dotnetNotices = Join-Path $dotnetRoot 'ThirdPartyNotices.txt'
+          Copy-Item -LiteralPath $dotnetLicense -Destination (Join-Path $distDirectory $licenseAssetName)
+          Copy-Item -LiteralPath $dotnetNotices -Destination (Join-Path $distDirectory $noticesAssetName)
+
+          $expectedAssets = @($assetName, $licenseAssetName, $noticesAssetName)
+          $actualAssets = @(Get-ChildItem -LiteralPath $distDirectory -File | Select-Object -ExpandProperty Name)
+          $assetDifferences = @(Compare-Object -ReferenceObject $expectedAssets -DifferenceObject $actualAssets)
+          if ($actualAssets.Count -ne $expectedAssets.Count -or $assetDifferences.Count -ne 0) {
+              throw "Windows artifact staging differs from the expected files: $($actualAssets -join ', ')"
+          }
+
+      - name: Upload tested Windows release asset
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-release
+          path: |
+            dist/*.exe
+            dist/*-dotnet-LICENSE.txt
+            dist/*-dotnet-THIRD-PARTY-NOTICES.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
   release:
     name: Package and publish
-    needs: validate
+    needs:
+      - validate
+      - package-windows
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -31,11 +150,6 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Set up pinned .NET 8 SDK
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
-        with:
-          dotnet-version: 8.0.424
 
       - name: Verify tag and main ancestry
         shell: bash
@@ -52,68 +166,48 @@ jobs:
             exit 1
           fi
 
-      - name: Ensure packaging tools
+      - name: Download tested Windows release asset
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: windows-release
+          path: dist
+
+      - name: Ensure release tooling
         shell: bash
         run: |
           set -euo pipefail
-          if ! command -v zip >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y zip
-          fi
           command -v gh >/dev/null
 
-      - name: Publish framework-dependent Windows GUI
-        shell: bash
-        run: |
-          set -euo pipefail
-          project='gui/CdromDumpToolsGui/CdromDumpToolsGui.csproj'
-          output='dist/gui-publish'
-          version="${GITHUB_REF_NAME#v}"
-
-          dotnet restore "$project" \
-            --runtime win-x64 \
-            -p:EnableWindowsTargeting=true
-          dotnet publish "$project" \
-            --configuration Release \
-            --runtime win-x64 \
-            --self-contained false \
-            --no-restore \
-            --output "$output" \
-            -p:EnableWindowsTargeting=true \
-            -p:ContinuousIntegrationBuild=true \
-            -p:Version="$version" \
-            -p:DebugSymbols=false \
-            -p:DebugType=None
-
-          test -f "$output/CdromDumpToolsGui.exe"
-
-      - name: Build reproducible release archives
+      - name: Build release artifacts
         shell: bash
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
           package="cdrom-dump-tools-${version}"
           source_date_epoch="$(git show -s --format=%ct "$GITHUB_SHA")"
+          windows_executable="dist/${package}-windows-x64.exe"
+          dotnet_license="dist/${package}-dotnet-LICENSE.txt"
+          dotnet_notices="dist/${package}-dotnet-THIRD-PARTY-NOTICES.txt"
+          env_template="dist/${package}.env.example"
 
-          mkdir -p "dist/windows/$package/gui" "dist/linux/$package/gui"
-          install -m 0644 README.md .env.example bin_to_audio_windows.ps1 bin_to_audio_windows.cmd "dist/windows/$package/"
-          install -m 0644 gui/README.md "dist/windows/$package/gui/"
-          cp -a dist/gui-publish/. "dist/windows/$package/gui/"
+          for required_asset in "$windows_executable" "$dotnet_license" "$dotnet_notices"; do
+            if [[ ! -s "$required_asset" ]]; then
+              printf 'Required tested Windows release asset is missing or empty: %s\n' "$required_asset" >&2
+              exit 1
+            fi
+          done
+          install -m 0644 .env.example "$env_template"
+          mkdir -p "dist/linux/$package"
           install -m 0644 README.md "dist/linux/$package/"
-          install -m 0644 gui/README.md "dist/linux/$package/gui/"
 
-          if find dist/windows -type f -name '.env' -print -quit | grep -q .; then
-            printf 'A real .env file must never enter the release archive.\n' >&2
+          if find dist -type f -name '.env' -print -quit | grep -q .; then
+            printf 'A real .env file must never enter release artifacts.\n' >&2
             exit 1
           fi
 
           install -m 0755 dump_cdrom.sh bin_to_audio.sh "dist/linux/$package/"
-          find "dist/windows/$package" "dist/linux/$package" -exec touch -d "@$source_date_epoch" {} +
+          find "dist/linux/$package" -exec touch -d "@$source_date_epoch" {} +
 
-          (
-            cd dist/windows
-            zip -X -9 -r "../${package}-windows.zip" "$package"
-          )
           tar \
             --sort=name \
             --mtime="@${source_date_epoch}" \
@@ -126,7 +220,12 @@ jobs:
 
           (
             cd dist
-            sha256sum "${package}-windows.zip" "${package}-linux.tar.gz" >SHA256SUMS.txt
+            sha256sum \
+              "${package}-windows-x64.exe" \
+              "${package}-dotnet-LICENSE.txt" \
+              "${package}-dotnet-THIRD-PARTY-NOTICES.txt" \
+              "${package}.env.example" \
+              "${package}-linux.tar.gz" >SHA256SUMS.txt
           )
 
       - name: Publish GitHub Release
@@ -138,15 +237,28 @@ jobs:
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
           version="${tag#v}"
-          windows_archive="dist/cdrom-dump-tools-${version}-windows.zip"
+          windows_executable="dist/cdrom-dump-tools-${version}-windows-x64.exe"
+          dotnet_license="dist/cdrom-dump-tools-${version}-dotnet-LICENSE.txt"
+          dotnet_notices="dist/cdrom-dump-tools-${version}-dotnet-THIRD-PARTY-NOTICES.txt"
+          env_template="dist/cdrom-dump-tools-${version}.env.example"
           linux_archive="dist/cdrom-dump-tools-${version}-linux.tar.gz"
           checksums="dist/SHA256SUMS.txt"
 
           if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" "$windows_archive" "$linux_archive" "$checksums" --clobber
+            gh release upload "$tag" \
+              "$windows_executable" \
+              "$dotnet_license" \
+              "$dotnet_notices" \
+              "$env_template" \
+              "$linux_archive" \
+              "$checksums" \
+              --clobber
           else
             gh release create "$tag" \
-              "$windows_archive" \
+              "$windows_executable" \
+              "$dotnet_license" \
+              "$dotnet_notices" \
+              "$env_template" \
               "$linux_archive" \
               "$checksums" \
               --verify-tag \

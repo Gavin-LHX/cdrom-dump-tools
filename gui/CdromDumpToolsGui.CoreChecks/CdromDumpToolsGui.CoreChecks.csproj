@@ -11,9 +11,17 @@
   <ItemGroup>
     <Compile Include="..\CdromDumpToolsGui\Core\ConversionOptions.cs" Link="Core\ConversionOptions.cs" />
     <Compile Include="..\CdromDumpToolsGui\Core\ConverterCommand.cs" Link="Core\ConverterCommand.cs" />
+    <Compile Include="..\CdromDumpToolsGui\Core\AiTranslationConfiguration.cs" Link="Core\AiTranslationConfiguration.cs" />
+    <Compile Include="..\CdromDumpToolsGui\Core\SecretProtector.cs" Link="Core\SecretProtector.cs" />
+    <Compile Include="..\CdromDumpToolsGui\Core\EmbeddedConverterScript.cs" Link="Core\EmbeddedConverterScript.cs" />
+    <Compile Include="..\CdromDumpToolsGui\Core\ElevationGuard.cs" Link="Core\ElevationGuard.cs" />
+    <Compile Include="..\CdromDumpToolsGui\Core\EnvironmentFileResolver.cs" Link="Core\EnvironmentFileResolver.cs" />
     <Compile Include="..\CdromDumpToolsGui\Core\OutputPathResolver.cs" Link="Core\OutputPathResolver.cs" />
     <Compile Include="..\CdromDumpToolsGui\Core\PowerShellLocator.cs" Link="Core\PowerShellLocator.cs" />
-    <Compile Include="..\CdromDumpToolsGui\Core\ScriptLocator.cs" Link="Core\ScriptLocator.cs" />
+    <Compile Include="..\CdromDumpToolsGui\Settings.cs" Link="Settings.cs" />
+    <EmbeddedResource Include="..\..\bin_to_audio_windows.ps1"
+                      Link="Resources\bin_to_audio_windows.ps1"
+                      LogicalName="CdromDumpToolsGui.Resources.bin_to_audio_windows.ps1" />
   </ItemGroup>
 
 </Project>

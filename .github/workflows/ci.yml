@@ -129,12 +129,49 @@ jobs:
           dotnet build $guiProject --configuration Release --no-restore -p:ContinuousIntegrationBuild=true
           dotnet build $checksProject --configuration Release --no-restore -p:ContinuousIntegrationBuild=true
 
-      - name: Run GUI core checks
+      - name: Run GUI core and embedded-script checks
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $checksProject = '.\gui\CdromDumpToolsGui.CoreChecks\CdromDumpToolsGui.CoreChecks.csproj'
           dotnet run --project $checksProject --configuration Release --no-build
+
+      - name: Verify self-contained single-file GUI publish
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $guiProject = '.\gui\CdromDumpToolsGui\CdromDumpToolsGui.csproj'
+          $publishDirectory = Join-Path $env:RUNNER_TEMP "cdrom-dump-tools-gui-$([guid]::NewGuid().ToString('N'))"
+
+          dotnet publish $guiProject `
+            --configuration Release `
+            --runtime win-x64 `
+            --self-contained true `
+            --output $publishDirectory `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:EnableCompressionInSingleFile=true `
+            -p:ContinuousIntegrationBuild=true `
+            -p:DebugSymbols=false `
+            -p:DebugType=None
+
+          $publishedFiles = @(Get-ChildItem -LiteralPath $publishDirectory -File)
+          if ($publishedFiles.Count -ne 1 -or $publishedFiles[0].Name -cne 'CdromDumpToolsGui.exe') {
+              $publishedFiles | Format-Table Name, Length -AutoSize
+              throw 'GUI publish output must contain exactly one CdromDumpToolsGui.exe file.'
+          }
+          if ($publishedFiles[0].Length -lt 1MB) {
+              throw 'Published GUI is unexpectedly small for a self-contained executable.'
+          }
+
+          $selfTest = Start-Process `
+            -FilePath $publishedFiles[0].FullName `
+            -ArgumentList '--self-test-embedded-script' `
+            -Wait `
+            -PassThru
+          if ($selfTest.ExitCode -ne 0) {
+              throw "Published GUI embedded-script self-test failed with exit code $($selfTest.ExitCode)."
+          }
 
       - name: Parse with PowerShell 7
         shell: pwsh
@@ -197,21 +234,29 @@ jobs:
           goto next
           :done
           if not defined output exit /b 1
+          if defined OPENAI_API_KEY exit /b 97
           type nul > "%output%"
           exit /b 0
           '@
           $fakeFfmpegPath = Join-Path $fixture 'ffmpeg.cmd'
           [IO.File]::WriteAllText($fakeFfmpegPath, $fakeFfmpeg, [Text.Encoding]::ASCII)
 
-          & $scriptPath `
-            -BinPath (Join-Path $fixture 'test-disc.bin') `
-            -TocPath (Join-Path $fixture 'test-disc.toc') `
-            -OutputDirectory $output `
-            -FfmpegPath $fakeFfmpegPath `
-            -NoMetadata `
-            -NoCover `
-            -NoLyrics `
-            -NoPause
+          $previousOpenAiKey = [Environment]::GetEnvironmentVariable('OPENAI_API_KEY', [EnvironmentVariableTarget]::Process)
+          try {
+            [Environment]::SetEnvironmentVariable('OPENAI_API_KEY', 'ci-secret-must-not-reach-ffmpeg', [EnvironmentVariableTarget]::Process)
+            & $scriptPath `
+              -BinPath (Join-Path $fixture 'test-disc.bin') `
+              -TocPath (Join-Path $fixture 'test-disc.toc') `
+              -OutputDirectory $output `
+              -FfmpegPath $fakeFfmpegPath `
+              -NoMetadata `
+              -NoCover `
+              -NoLyrics `
+              -NoPause
+          }
+          finally {
+            [Environment]::SetEnvironmentVariable('OPENAI_API_KEY', $previousOpenAiKey, [EnvironmentVariableTarget]::Process)
+          }
           if (-not (Test-Path -LiteralPath (Join-Path $output 'track-01.flac'))) {
               throw 'Windows PowerShell smoke test did not create the expected output track.'
           }

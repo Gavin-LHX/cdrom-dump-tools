@@ -141,6 +141,32 @@ function Get-TranslationConfigurationValue {
     return $DefaultValue
 }
 
+function Clear-TranslationProcessEnvironment {
+    # The GUI can inject credentials into this PowerShell process without putting
+    # them on the command line. Configuration has already been copied into the
+    # resolved settings object before this function is called, so remove the
+    # variables before ffmpeg or any other child process is started.
+    foreach ($name in @(
+        'LYRICS_TRANSLATION_FALLBACK',
+        'AI_TRANSLATION_PROVIDER',
+        'GOOGLE_TRANSLATE_API_KEY',
+        'GOOGLE_TRANSLATE_BASE_URL',
+        'OPENAI_API_KEY',
+        'OPENAI_BASE_URL',
+        'OPENAI_MODEL',
+        'OPENAI_ORG_ID',
+        'OPENAI_PROJECT_ID',
+        'ANTHROPIC_API_KEY',
+        'ANTHROPIC_BASE_URL',
+        'ANTHROPIC_MODEL',
+        'ANTHROPIC_VERSION',
+        'ANTHROPIC_MAX_TOKENS',
+        'AI_TRANSLATION_PROMPT_FILE'
+    )) {
+        [Environment]::SetEnvironmentVariable($name, $null, [EnvironmentVariableTarget]::Process)
+    }
+}
+
 function Resolve-TranslationServiceUrl {
     param(
         [string] $Value,
@@ -4480,6 +4506,7 @@ try {
             -DotEnvValues $dotEnvValues `
             -EnvironmentDirectory $environmentDirectory
     }
+    Clear-TranslationProcessEnvironment
 
     $BinPath = Resolve-ExistingFile -Path $BinPath -Description 'BIN path'
     if ([IO.Path]::GetExtension($BinPath) -ine '.bin') {

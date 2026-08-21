@@ -1,6 +1,8 @@
 # CD-ROM Dump Tools GUI
 
-这是 `bin_to_audio_windows.ps1` 的 Windows 图形界面，使用 C#、WinForms 和 .NET 8 构建。GUI 负责校验输入、组织参数、启动转换器、显示实时日志并定位最终输出目录；拆轨、元数据匹配、封面、歌词、标签和文件命名仍由仓库根目录的 PowerShell 脚本完成。
+这是 Windows 增强转换器的 C#、WinForms 图形界面。GUI 负责校验输入、组织参数、调用 PowerShell、显示实时日志并定位最终输出目录；拆轨、元数据匹配、封面、歌词、标签和文件命名仍由与仓库根脚本同源的 PowerShell 转换引擎完成。
+
+正式发布使用 `win-x64` 自包含单文件：`bin_to_audio_windows.ps1` 作为程序集资源嵌入 EXE，运行时按内容 SHA-256 释放到 `%LOCALAPPDATA%\CdromDumpToolsGui\ConverterScripts\<SHA-256>\` 的版本化目录并校验完整性，再交给 PowerShell。用户不需要另行下载或摆放 `.ps1`，也不需要安装 .NET Runtime；被篡改的运行副本会在下次使用时按嵌入内容修复。
 
 ## 已有功能
 
@@ -8,44 +10,38 @@
 - 输出无损 FLAC 或 WAV。
 - 控制元数据、封面、歌词、网易云音乐和 QQ 音乐查询。
 - 选择网易云/QQ 音乐标签优先级、歌词机器翻译回退顺序和 OpenAI/Anthropic API 格式。
+- 通过主界面的“模型 / API Key…”打开独立设置窗口：可填写 OpenAI Chat Completions 兼容接口、Anthropic Messages 兼容接口和 Google Cloud Translation Basic v2 所需字段，也可选用内置 Prompt 或外部 Prompt 文件。
 - 设置 MusicBrainz 发行版本序号和 User-Agent 等高级参数。
 - 转换前检查路径与参数，并以参数数组启动 PowerShell，不通过 `cmd.exe` 拼接执行命令。
+- 命令预览自动换行，只保留纵向滚动条；API Key 不会进入预览内容。
 - 实时显示标准输出和错误输出；可取消正在运行的转换。
 - 从转换日志识别真实输出目录，成功后可直接打开。
-- 保存常用输入路径和界面选项到 `%LOCALAPPDATA%\CdromDumpToolsGui\settings.json`。一次性的最终输出目录不会持久化；设置文件只记录 `.env` 的路径，不保存 API Key 内容。
+- 保存常用输入路径、界面选项和非敏感 AI 配置到 `%LOCALAPPDATA%\CdromDumpToolsGui\settings.json`。一次性的最终输出目录不会持久化；API Key 是否保存由“记住 API Key”选项控制，保存时只写入当前 Windows 用户 DPAPI 加密后的密文。
 
 GUI 不负责读取实体光盘。请先用根目录的 `dump_cdrom.sh` 生成 BIN/TOC，或使用已有的 `cdrdao` BIN/TOC 镜像。
 
 ## 运行要求
 
 - Windows 10/11 x64。
-- [.NET 8 Desktop Runtime x64](https://dotnet.microsoft.com/download/dotnet/8.0)。GitHub Release 和 `publish.cmd` 生成的是 framework-dependent 版本，不会捆绑整个 .NET 运行时。
-- Windows PowerShell 5.1，或 PowerShell 7；安装了 PowerShell 7 时优先使用 `pwsh.exe`。
+- Windows PowerShell 5.1，或 PowerShell 7；单 EXE 仍会在内部调用 PowerShell，安装了 PowerShell 7 时优先使用 `pwsh.exe`。
 - [FFmpeg](https://ffmpeg.org/)；可加入 `PATH`，也可在 GUI 中指定 `ffmpeg.exe`。
 - BIN 文件及与其匹配的 `cdrdao` TOC 文件。
 - 元数据、封面和在线歌词需要网络连接。
+- 请以普通用户运行。转换不需要管理员权限；程序检测到提升后的管理员令牌时会拒绝启动，以免用户目录中的脚本、设置或工具路径被高权限进程误用。
 
-GUI 启动时会从自身目录逐级向上查找 `bin_to_audio_windows.ps1`。GitHub Release 的 Windows ZIP 已按下列结构放置文件，请不要只移动其中的 EXE：
+GitHub Release 直接提供版本化的 Windows EXE：
 
 ```text
-cdrom-dump-tools-版本/
-├── bin_to_audio_windows.ps1
-├── bin_to_audio_windows.cmd
-├── .env.example
-├── README.md
-└── gui/
-    ├── CdromDumpToolsGui.exe
-    ├── CdromDumpToolsGui.dll
-    ├── CdromDumpToolsGui.deps.json
-    ├── CdromDumpToolsGui.runtimeconfig.json
-    └── README.md
+cdrom-dump-tools-版本-windows-x64.exe
 ```
+
+它可以单独移动和运行，不依赖旁边的 DLL、`.runtimeconfig.json`、`.ps1` 或 .NET Runtime。PowerShell 与 FFmpeg 仍是外部运行依赖。
 
 ## 使用方法
 
-1. 解压 Windows 发布包并运行 `gui\CdromDumpToolsGui.exe`。
+1. 从 GitHub Release 下载 Windows x64 EXE 并直接运行。
 2. 选择或拖入 `.bin`；同目录同名 `.toc` 存在时可直接使用，也可手动指定。
-3. 选择 FLAC/WAV 和所需的元数据、封面、歌词选项。
+3. 选择 FLAC/WAV 和所需的元数据、封面、歌词选项；需要机器翻译回退时，可点击“模型 / API Key…”直接配置服务。
 4. 将“最终输出目录”留空以自动命名，或指定一个尚不存在的完整目标目录。
 5. 开始转换，在日志区确认匹配来源和进度。转换成功后可用“打开输出目录”进入实际结果目录。
 
@@ -63,31 +59,46 @@ cdrom-dump-tools-版本/
 
 在线元数据和平台已有歌词不需要 AI Key。只有在网易云音乐、QQ 音乐和 LRCLIB 都没有中文歌词，并启用 AI/Google 翻译回退时，才需要相应配置。
 
-从根目录模板创建本地配置：
+日常使用可直接点击主界面的“模型 / API Key…”：
+
+- **OpenAI / 兼容接口**：API Key、Base URL、模型，以及可选 Organization ID、Project ID；请求使用 Chat Completions 兼容格式，脚本会在 Base URL 后补 `/chat/completions`。
+- **Anthropic / 兼容接口**：API Key、Base URL、模型、API Version 和 Max Tokens；请求使用 Messages 兼容格式，脚本会在 Base URL 后补 `/messages`。
+- **Google 翻译**：Google Cloud Translation Basic v2 的 API Key 和 Base URL。
+- **Prompt**：留空使用内置“信、达、雅”歌词翻译 Prompt；也可选择本地 UTF-8 Prompt 文件覆盖它。这里只保存文件路径，文件内容不会嵌入 EXE。
+
+为某个服务填写 Key、模型或自定义地址后，该服务的 GUI 配置会通过**子 PowerShell 进程的环境变量**传入，并覆盖 `.env` 中的同名值；未启用服务在界面中显示的默认地址不会遮蔽 `.env`。API Key 不会成为命令行参数，也不会出现在命令预览或转换日志中。PowerShell 把配置解析到自身设置对象后会立即清除相关进程环境变量，再启动 FFmpeg 等子进程，避免把 Key 继续传给无关工具。
+
+“记住 API Key”决定是否跨启动保存密钥：
+
+- 勾选时，Key 使用 Windows **当前用户** DPAPI 加密，只有密文会写入 `%LOCALAPPDATA%\CdromDumpToolsGui\settings.json`；换到其他 Windows 用户时通常无法解密，GUI 会把不可读的 Key 留空并提示。
+- 取消勾选时，Key 不写入设置文件，只在本次 GUI 会话内存中保留；开始转换时仍只通过子 PowerShell 的临时进程环境传递。
+- Base URL、模型、Organization/Project ID、API Version、Max Tokens、Prompt 文件路径等非密钥设置会按普通配置保存。
+- 无论是否记住，Key 都不会写入参数、预览、日志、EXE、Git 仓库或 GitHub Release。
+
+`.env` 仍保留为命令行和高级回退方式。从仓库的 `.env.example`，或 Release 随附的版本化 `.env.example` 资产创建本地配置：
 
 ```powershell
 Copy-Item .env.example .env
 notepad .env
 ```
 
-然后在 GUI 中选择该 `.env`，或把它放在 `bin_to_audio_windows.ps1` 旁边使用默认位置。
+然后在 GUI 中选择该 `.env`，或把文件命名为 `.env` 并放在 EXE 同目录让程序自动发现。显式选择的路径优先；已启用服务的 GUI 配置又优先于 `.env`。EXE 不会内嵌、生成或显示任何真实 API Key。
 
 - 真实 `.env` 已被 Git 忽略，CI 和发布流程还会检查它没有被跟踪或打包。
 - `.env.example` 只能保留空白占位符，禁止填写真实 Key。
-- GUI 设置只保存 `.env` 文件路径，不读取或复制 Key 到 `settings.json`。
 - 不要把 `.env` 放进发布目录、截图、日志或问题报告；泄漏后应立即在服务商后台撤销并轮换 Key。
-- 自定义 OpenAI/Anthropic 兼容端点时优先使用 HTTPS。具体变量、服务调用内容和缓存规则见仓库根目录 `README.md`。
+- 自定义 OpenAI/Anthropic 兼容端点必须使用 HTTPS；只有 `localhost`/loopback 本机服务允许 HTTP。具体变量、服务调用内容和缓存规则见仓库根目录 `README.md`。
 
 ## 构建
 
-构建需要 [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)，不是只有 Desktop Runtime。
+源码构建需要 [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)。普通用户直接运行 Release EXE 时不需要 SDK 或 Runtime。
 
 ```cmd
 cd gui
 build.cmd
 ```
 
-`build.cmd` 会先还原依赖，再构建 Release 配置。主要输出位于：
+`build.cmd` 会先还原依赖，再构建用于开发验证的 Release 配置。主要输出位于：
 
 ```text
 gui\CdromDumpToolsGui\bin\Release\net8.0-windows\
@@ -107,13 +118,13 @@ cd gui
 publish.cmd
 ```
 
-该命令生成 framework-dependent `win-x64` 文件：
+该命令生成自包含、单文件的 `win-x64` EXE：
 
 ```text
-gui\publish\win-x64\
+gui\publish\win-x64\CdromDumpToolsGui.exe
 ```
 
-`gui\publish\` 已被 Git 忽略。这个目录只含 GUI 运行文件；测试时仍需让它能够向上找到根 PowerShell 脚本，或按上面的发布包结构把 GUI 放入脚本旁的 `gui\` 子目录。
+`gui\publish\` 已被 Git 忽略，发布脚本会清理目标目录并强制检查其中只有这一个 EXE。转换脚本和 .NET 运行时均已封装在单文件中；FFmpeg 和 Windows PowerShell/PowerShell 7 不会被封装，任何 API Key 或真实 `.env` 也不会被写入 EXE。
 
 运行不依赖桌面交互的核心检查：
 
@@ -121,11 +132,13 @@ gui\publish\win-x64\
 dotnet run --project gui\CdromDumpToolsGui.CoreChecks\CdromDumpToolsGui.CoreChecks.csproj -c Release
 ```
 
-GitHub Actions 会在 Windows Server 2025 上使用固定的 .NET 8 SDK 还原并构建 GUI，同时运行该核心检查项目；版本标签发布前还会复用完整 CI，并把标签版本注入 GUI。Release 中的 Windows ZIP 会包含 GUI、根 PowerShell 启动文件、根 README 和安全的 `.env.example`，绝不会包含真实 `.env`。
+GitHub Actions 会在 Windows Server 2025 上使用固定的 .NET 8 SDK 还原并构建 GUI，运行包括嵌入脚本在内的核心检查，并再次发布验证“目录中恰好只有一个 EXE”。版本标签发布前会复用完整 CI、把标签版本注入 EXE，并在 Windows 上实际自检最终字节；Release 直接上传该 EXE、可选的空白 `.env.example`、Linux 脚本包、内嵌 .NET Runtime 对应的 `LICENSE`/`THIRD-PARTY-NOTICES` 和 SHA-256 清单。许可证资产不是运行依赖，真实 `.env` 永远不会上传。
 
 ## 限制
 
 - GUI 是 Windows 转换前端，不替代 Linux 光盘读取脚本。
 - 根转换器当前只接受纯 CD-DA TOC；数据轨或混合模式光盘应使用理解对应轨道格式的工具处理。
-- GUI 不包含 FFmpeg、.NET 运行时或任何在线服务凭据。
+- GUI 单 EXE 包含自身所需的 .NET 运行时和 PowerShell 转换脚本，但不包含 FFmpeg、PowerShell 本身或任何在线服务凭据。
+- 当前 Release EXE 未做 Authenticode 代码签名，首次下载时 Windows 可能显示 SmartScreen 提示；请从项目 Release 获取文件并用同页 `SHA256SUMS.txt` 核对哈希。
+- `-ExecutionPolicy Bypass` 只处理常规 PowerShell 执行策略，不会绕过 AppLocker、WDAC、Constrained Language Mode 或杀毒软件策略；受管设备仍可能阻止转换器运行。
 - 取消会终止本次转换，但外部服务已经收到的请求无法撤回；机器翻译可能产生费用。

@@ -136,7 +136,8 @@ public static class ConverterCommand
     public static ProcessStartInfo CreateStartInfo(
         string powerShellPath,
         string scriptPath,
-        ConversionOptions options)
+        ConversionOptions options,
+        AiTranslationConfiguration? aiConfiguration = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(powerShellPath);
         var startInfo = new ProcessStartInfo
@@ -159,6 +160,18 @@ public static class ConverterCommand
         {
             // ArgumentList deliberately avoids cmd.exe and PowerShell string parsing.
             startInfo.ArgumentList.Add(argument);
+        }
+
+        if (aiConfiguration is not null)
+        {
+            foreach (var pair in AiTranslationEnvironment.Build(aiConfiguration))
+            {
+                if (!AiTranslationEnvironment.SupportedVariableNames.Contains(pair.Key))
+                {
+                    throw new InvalidOperationException($"Unexpected AI environment variable: {pair.Key}");
+                }
+                startInfo.Environment[pair.Key] = pair.Value;
+            }
         }
 
         return startInfo;

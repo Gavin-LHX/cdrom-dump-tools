@@ -103,6 +103,7 @@ try {
     $requiredFunctions = @(
         'Import-DotEnvFile',
         'Get-TranslationConfigurationValue',
+        'Clear-TranslationProcessEnvironment',
         'Resolve-TranslationServiceUrl',
         'Get-ObjectProperty',
         'ConvertTo-MatchText',
@@ -219,10 +220,18 @@ BAD KEY=do-not-display-this-secret
         'LYRICS_TRANSLATION_FALLBACK',
         'AI_TRANSLATION_PROVIDER',
         'GOOGLE_TRANSLATE_API_KEY',
+        'GOOGLE_TRANSLATE_BASE_URL',
         'OPENAI_API_KEY',
+        'OPENAI_BASE_URL',
         'OPENAI_MODEL',
+        'OPENAI_ORG_ID',
+        'OPENAI_PROJECT_ID',
         'ANTHROPIC_API_KEY',
-        'ANTHROPIC_MODEL'
+        'ANTHROPIC_BASE_URL',
+        'ANTHROPIC_MODEL',
+        'ANTHROPIC_VERSION',
+        'ANTHROPIC_MAX_TOKENS',
+        'AI_TRANSLATION_PROMPT_FILE'
     )
     $previousTranslationEnvironment = @{}
     try {
@@ -258,6 +267,14 @@ BAD KEY=do-not-display-this-secret
             -DotEnvValues $configuredServices `
             -EnvironmentDirectory $temporaryRoot
         Assert-Equal 'Google,OpenAI,Anthropic' (@($legacyOrderSettings.Providers) -join ',') 'an explicit legacy Google-first order remains supported'
+
+        foreach ($name in $translationEnvironmentNames) {
+            [Environment]::SetEnvironmentVariable($name, 'must-not-reach-ffmpeg', [EnvironmentVariableTarget]::Process)
+        }
+        Clear-TranslationProcessEnvironment
+        foreach ($name in $translationEnvironmentNames) {
+            Assert-True ([string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($name, [EnvironmentVariableTarget]::Process))) "resolved translation setting '$name' is removed before child processes start"
+        }
     }
     finally {
         foreach ($name in $translationEnvironmentNames) {

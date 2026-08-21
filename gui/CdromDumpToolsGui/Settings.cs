@@ -24,6 +24,103 @@ internal sealed class AppSettings
     public int ReleaseIndex { get; set; }
     public string MusicBrainzUserAgent { get; set; } = ConversionOptions.DefaultMusicBrainzUserAgent;
     public bool OpenOutputOnSuccess { get; set; }
+    public StoredAiSettings AiSettings { get; set; } = new();
+}
+
+internal sealed class StoredAiSettings
+{
+    public bool RememberApiKeys { get; set; } = true;
+    public string ProtectedGoogleApiKey { get; set; } = string.Empty;
+    public string GoogleBaseUrl { get; set; } = AiTranslationConfiguration.DefaultGoogleBaseUrl;
+    public string ProtectedOpenAiApiKey { get; set; } = string.Empty;
+    public string OpenAiBaseUrl { get; set; } = AiTranslationConfiguration.DefaultOpenAiBaseUrl;
+    public string OpenAiModel { get; set; } = string.Empty;
+    public string OpenAiOrganizationId { get; set; } = string.Empty;
+    public string OpenAiProjectId { get; set; } = string.Empty;
+    public string ProtectedAnthropicApiKey { get; set; } = string.Empty;
+    public string AnthropicBaseUrl { get; set; } = AiTranslationConfiguration.DefaultAnthropicBaseUrl;
+    public string AnthropicModel { get; set; } = string.Empty;
+    public string AnthropicVersion { get; set; } = AiTranslationConfiguration.DefaultAnthropicVersion;
+    public int AnthropicMaxTokens { get; set; } = AiTranslationConfiguration.DefaultAnthropicMaxTokens;
+    public string PromptFile { get; set; } = string.Empty;
+
+    public StoredAiSettings Clone() => (StoredAiSettings)MemberwiseClone();
+}
+
+internal static class AiSettingsPersistence
+{
+    public static AiTranslationConfiguration Load(StoredAiSettings? stored, out bool hadUnreadableSecret)
+    {
+        stored ??= new StoredAiSettings();
+        hadUnreadableSecret = false;
+        var googleKey = Unprotect(
+            stored.ProtectedGoogleApiKey,
+            ref hadUnreadableSecret,
+            () => stored.ProtectedGoogleApiKey = string.Empty);
+        var openAiKey = Unprotect(
+            stored.ProtectedOpenAiApiKey,
+            ref hadUnreadableSecret,
+            () => stored.ProtectedOpenAiApiKey = string.Empty);
+        var anthropicKey = Unprotect(
+            stored.ProtectedAnthropicApiKey,
+            ref hadUnreadableSecret,
+            () => stored.ProtectedAnthropicApiKey = string.Empty);
+        return new AiTranslationConfiguration
+        {
+            GoogleApiKey = googleKey,
+            GoogleBaseUrl = DefaultIfBlank(stored.GoogleBaseUrl, AiTranslationConfiguration.DefaultGoogleBaseUrl),
+            OpenAiApiKey = openAiKey,
+            OpenAiBaseUrl = DefaultIfBlank(stored.OpenAiBaseUrl, AiTranslationConfiguration.DefaultOpenAiBaseUrl),
+            OpenAiModel = stored.OpenAiModel ?? string.Empty,
+            OpenAiOrganizationId = stored.OpenAiOrganizationId ?? string.Empty,
+            OpenAiProjectId = stored.OpenAiProjectId ?? string.Empty,
+            AnthropicApiKey = anthropicKey,
+            AnthropicBaseUrl = DefaultIfBlank(stored.AnthropicBaseUrl, AiTranslationConfiguration.DefaultAnthropicBaseUrl),
+            AnthropicModel = stored.AnthropicModel ?? string.Empty,
+            AnthropicVersion = DefaultIfBlank(stored.AnthropicVersion, AiTranslationConfiguration.DefaultAnthropicVersion),
+            AnthropicMaxTokens = stored.AnthropicMaxTokens is >= 256 and <= 32768
+                ? stored.AnthropicMaxTokens
+                : AiTranslationConfiguration.DefaultAnthropicMaxTokens,
+            PromptFile = stored.PromptFile ?? string.Empty,
+        };
+    }
+
+    public static StoredAiSettings Save(AiTranslationConfiguration configuration, bool rememberApiKeys)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        AiTranslationEnvironment.Validate(configuration);
+        return new StoredAiSettings
+        {
+            RememberApiKeys = rememberApiKeys,
+            ProtectedGoogleApiKey = rememberApiKeys ? SecretProtector.Protect(configuration.GoogleApiKey) : string.Empty,
+            GoogleBaseUrl = configuration.GoogleBaseUrl.Trim(),
+            ProtectedOpenAiApiKey = rememberApiKeys ? SecretProtector.Protect(configuration.OpenAiApiKey) : string.Empty,
+            OpenAiBaseUrl = configuration.OpenAiBaseUrl.Trim(),
+            OpenAiModel = configuration.OpenAiModel.Trim(),
+            OpenAiOrganizationId = configuration.OpenAiOrganizationId.Trim(),
+            OpenAiProjectId = configuration.OpenAiProjectId.Trim(),
+            ProtectedAnthropicApiKey = rememberApiKeys ? SecretProtector.Protect(configuration.AnthropicApiKey) : string.Empty,
+            AnthropicBaseUrl = configuration.AnthropicBaseUrl.Trim(),
+            AnthropicModel = configuration.AnthropicModel.Trim(),
+            AnthropicVersion = configuration.AnthropicVersion.Trim(),
+            AnthropicMaxTokens = configuration.AnthropicMaxTokens,
+            PromptFile = configuration.PromptFile.Trim(),
+        };
+    }
+
+    private static string Unprotect(string? value, ref bool hadUnreadableSecret, Action clearUnreadableValue)
+    {
+        if (SecretProtector.TryUnprotect(value, out var plaintext))
+        {
+            return plaintext;
+        }
+        hadUnreadableSecret = true;
+        clearUnreadableValue();
+        return string.Empty;
+    }
+
+    private static string DefaultIfBlank(string? value, string defaultValue) =>
+        string.IsNullOrWhiteSpace(value) ? defaultValue : value.Trim();
 }
 
 internal static class AppSettingsStore
@@ -46,7 +143,9 @@ internal static class AppSettingsStore
             }
 
             var json = File.ReadAllText(SettingsPath, Encoding.UTF8);
-            return JsonSerializer.Deserialize<AppSettings>(json, SerializerOptions) ?? new AppSettings();
+            var settings = JsonSerializer.Deserialize<AppSettings>(json, SerializerOptions) ?? new AppSettings();
+            settings.AiSettings ??= new StoredAiSettings();
+            return settings;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
         {
@@ -60,7 +159,7 @@ internal static class AppSettingsStore
         ArgumentNullException.ThrowIfNull(settings);
         Directory.CreateDirectory(SettingsDirectory);
 
-        // AppSettings intentionally contains only an .env path, never API key values.
+        // API keys are serialized only as Windows-current-user DPAPI ciphertext.
         var json = JsonSerializer.Serialize(settings, SerializerOptions);
         var temporaryPath = Path.Combine(SettingsDirectory, $"settings.{Guid.NewGuid():N}.tmp");
         try

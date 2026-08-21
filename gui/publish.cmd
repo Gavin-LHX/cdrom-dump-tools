@@ -35,16 +35,33 @@ if exist "%PUBLISH_DIR%" (
 dotnet.exe publish "%GUI_PROJECT%" ^
   --configuration Release ^
   --runtime win-x64 ^
-  --self-contained false ^
+  --self-contained true ^
   --output "%PUBLISH_DIR%" ^
+  -p:PublishSingleFile=true ^
+  -p:IncludeNativeLibrariesForSelfExtract=true ^
+  -p:EnableCompressionInSingleFile=true ^
   -p:DebugSymbols=false ^
   -p:DebugType=None
 if errorlevel 1 goto :failed
 
+if not exist "%PUBLISH_DIR%\CdromDumpToolsGui.exe" (
+  echo [ERROR] Single-file executable was not generated.
+  popd
+  exit /b 1
+)
+
+for /f %%C in ('dir /b /a-d "%PUBLISH_DIR%" ^| find /c /v ""') do set "PUBLISHED_FILE_COUNT=%%C"
+if not "%PUBLISHED_FILE_COUNT%"=="1" (
+  echo [ERROR] Publish directory must contain exactly one file, but found %PUBLISHED_FILE_COUNT%.
+  dir /b /a-d "%PUBLISH_DIR%"
+  popd
+  exit /b 1
+)
+
 echo.
 echo Publish completed successfully.
-echo Output: "%PUBLISH_DIR%"
-echo This framework-dependent build requires the .NET 8 Desktop Runtime x64.
+echo Output: "%PUBLISH_DIR%\CdromDumpToolsGui.exe"
+echo This self-contained executable does not require a separate .NET runtime or PowerShell script file.
 popd
 exit /b 0
 

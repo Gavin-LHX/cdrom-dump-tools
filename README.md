@@ -13,7 +13,7 @@
 | `bin_to_audio_windows.ps1` | Windows | 增强转换器：拆轨、元数据、年份/流派比对、封面、歌词和自动命名 |
 | `bin_to_audio_windows.cmd` | Windows | 拖放式启动器，默认调用 PowerShell 脚本转换为 FLAC |
 | [`gui/`](gui/README.md) | Windows | .NET 8 WinForms 前端：配置转换参数、显示实时日志、取消任务并打开最终输出目录 |
-| `.env.example` | Windows | 机器翻译回退的配置模板；复制为 `.env` 后填写 API Key，真实 `.env` 不应提交或分享 |
+| `.env.example` | Windows | 机器翻译回退的高级/命令行配置模板；GUI 也可直接填写，真实 `.env` 不应提交或分享 |
 
 ## 功能概览
 
@@ -54,7 +54,7 @@
 - 默认目录名：`艺术家 - 专辑 (年份) [FLAC/WAV]`。
 - 本地 `.lrc/.txt` 仍作为用户手动覆盖；在线歌词固定按“网易云音乐 → QQ 音乐 → LRCLIB”查询。当前来源没有中文歌词或译文时会继续下一来源：QQ 有中译时可优先于网易云外文原词，LRCLIB 有中文/双语正文时也可优先于两个国内源的外文原词；三者都只有外文时，保留顺序中最早的有效原词用于机器翻译。
 - 网易云歌词同时请求原文、中文翻译和可用的罗马音；QQ 音乐也请求原文、中文翻译及罗马音，并在接口返回可直接解码的内容时保留。翻译会与原文合并为双语 LRC/SRT，但不会把两个不同来源的歌词强行拼接。
-- 完成网易云、QQ 音乐和 LRCLIB 的歌词搜索后，如果最终选中的有效歌词仍没有中文，并且 `.env` 中配置了可用 API，默认依次尝试配置完整的 OpenAI-compatible、Anthropic-compatible AI；AI 均失败或不可用时才回退 Google Cloud Translation。已有中文、纯音乐、没有有效歌词或没有完整 API 配置时不会调用。
+- 完成网易云、QQ 音乐和 LRCLIB 的歌词搜索后，如果最终选中的有效歌词仍没有中文，并且 GUI、进程环境或 `.env` 中配置了可用 API，默认依次尝试配置完整的 OpenAI-compatible、Anthropic-compatible AI；AI 均失败或不可用时才回退 Google Cloud Translation。已有中文、纯音乐、没有有效歌词或没有完整 API 配置时不会调用。
 - AI 翻译同时兼容 OpenAI-compatible Chat Completions 与 Anthropic-compatible Messages 格式。内置“信、达、雅”Prompt 要求忠实原意、自然通顺、保留意象风格，并严格保持逐行 ID、顺序和数量；LRC 时间戳始终在本地重建。
 - 只有署名、作曲/编曲信息、`暂无歌词` 或纯音乐占位文字的响应会被判定为无实质歌词并立即回退，QQ 返回的无歌词状态也不会当作网络故障反复重试。
 - LRCLIB 响应始终从原始字节按 UTF-8 解码，兼容 Windows PowerShell 5.1 的非 ASCII JSON。
@@ -73,7 +73,9 @@
 
 ### Windows 图形界面
 
-[`gui/`](gui/README.md) 提供重新设计的 .NET 8 WinForms 前端，但不复制或替代 PowerShell 转换逻辑。它支持选择/拖放 BIN 与 TOC、FLAC/WAV、FFmpeg、自动或指定输出目录，以及元数据、封面、歌词、国内源优先级和 AI/Google 翻译回退等参数；运行时会显示实时日志，并从日志识别经专辑元数据命名后的实际输出目录。
+[`gui/`](gui/README.md) 提供重新设计的 .NET 8 WinForms 前端。正式发布的自包含单 EXE 嵌入与根脚本同源的 PowerShell 转换引擎，但不重新实现其业务逻辑。界面支持选择/拖放 BIN 与 TOC、FLAC/WAV、FFmpeg、自动或指定输出目录，以及元数据、封面、歌词、国内源优先级和 AI/Google 翻译回退等参数；主界面的“模型 / API Key…”可直接配置 OpenAI Chat Completions 兼容接口、Anthropic Messages 兼容接口、Google Cloud Translation Basic v2 和可选 Prompt 文件。运行时会显示实时日志，并从日志识别经专辑元数据命名后的实际输出目录。
+
+命令预览会自动换行且没有横向滚动条，并且不会显示 API Key。为已启用服务填写的 GUI 翻译配置通过子 PowerShell 进程环境覆盖 `.env`，未启用服务的界面默认值不会遮蔽 `.env`；脚本解析后会先清除这些环境变量，再启动 FFmpeg 等子进程。Key 可选择仅保留在当前会话内存，或使用 Windows 当前用户 DPAPI 加密后保存到 `%LOCALAPPDATA%\CdromDumpToolsGui\settings.json`；明文不会进入参数、预览、日志、EXE 或 Release。
 
 在仓库中构建或发布 GUI：
 
@@ -83,7 +85,9 @@ build.cmd
 publish.cmd
 ```
 
-`build.cmd` 需要 .NET 8 SDK；`publish.cmd` 在 `gui\publish\win-x64\` 生成需要 .NET 8 Desktop Runtime x64 的 framework-dependent 文件。该本地发布目录不会自动复制根 PowerShell 脚本，运行时须保持能够从 GUI 目录向上找到 `bin_to_audio_windows.ps1`。完整依赖、输出目录语义、`.env` 安全要求和发布包结构见 [GUI 中文说明](gui/README.md)。
+`build.cmd` 需要 .NET 8 SDK；`publish.cmd` 在 `gui\publish\win-x64\CdromDumpToolsGui.exe` 生成自包含单文件。该 EXE 不依赖外部 `.ps1` 或 .NET Runtime，可以单独移动；运行时仍会调用系统 PowerShell，并继续要求外部 FFmpeg。EXE 不内嵌 API Key 或真实 `.env`。完整依赖、输出目录语义、GUI/`.env` 密钥安全要求和发布方式见 [GUI 中文说明](gui/README.md)。
+
+GUI 应以普通用户身份运行；它会拒绝提升后的管理员令牌。公开 Release EXE 当前未做 Authenticode 签名，Windows 可能显示 SmartScreen 提示，请从项目 Release 下载并使用同页 `SHA256SUMS.txt` 校验文件。
 
 ## Linux：安装与读取 CD
 
@@ -286,14 +290,20 @@ MusicBrainz 要求客户端不超过每秒一次请求。脚本会在所有 Musi
 
 机器翻译默认是条件式回退，不会替代平台已有的中文歌词或译文。脚本先按网易云 → QQ 音乐 → LRCLIB 获取结果；网易云或 QQ 只有外文原词时仍会继续查后续来源。三者都没有中文时，才把顺序中最早的有效非纯音乐原词交给 AI → Google 回退链。任何翻译接口失败都只会保留原歌词并继续转换音频。
 
-Windows 发布包和仓库都提供 `.env.example`。首次使用时在 `bin_to_audio_windows.ps1` 所在目录执行：
+GUI 用户可点击主界面的“模型 / API Key…”直接设置：OpenAI / 兼容接口提供 API Key、Base URL、模型和可选 Organization/Project ID，使用 Chat Completions 兼容格式；Anthropic / 兼容接口提供 API Key、Base URL、模型、API Version 和 Max Tokens，使用 Messages 兼容格式；Google 页提供 Cloud Translation Basic v2 的 API Key 与 Base URL。Prompt 留空时使用内置“信、达、雅”版本，也可选择本地 UTF-8 Prompt 文件覆盖。
+
+为某个服务填写 Key、模型或自定义地址后，该服务的 GUI 字段不会拼进命令行，而是仅注入本次子 PowerShell 进程环境，并优先于 `.env` 同名值；未启用服务在界面中显示的默认值不会遮蔽 `.env`。PowerShell 将这些值解析到设置对象后立即清除相关进程环境变量，然后才会启动 FFmpeg 等子进程。API Key 不会出现在参数、命令预览、转换日志、EXE 或 GitHub Release 中。
+
+在“模型 / API Key…”中勾选“记住 API Key”时，Key 会用 Windows 当前用户 DPAPI 加密，`%LOCALAPPDATA%\CdromDumpToolsGui\settings.json` 只保存密文；不同 Windows 用户通常无法解密。取消勾选时不持久化 Key，只在当前 GUI 会话内存中保留，并在转换时通过上述临时子进程环境传递。Base URL、模型、Organization/Project ID、API Version、Max Tokens 和 Prompt 文件路径属于非密钥设置，会正常保存。
+
+`.env` 仍是命令行和高级回退配置。GitHub Release 资产和仓库都提供空白 `.env.example`；命令行脚本首次使用时可在 `bin_to_audio_windows.ps1` 所在目录执行：
 
 ```powershell
 Copy-Item .env.example .env
 notepad .env
 ```
 
-`.env` 已被 Git 忽略，不会进入发布归档。也可以不创建脚本旁的 `.env`，改用 `-EnvPath` 指向其他文件。命令行的 `-LyricsTranslationFallback`、`-AiTranslationProvider` 优先于 `.env`；其他配置也可由同名进程环境变量提供，进程环境变量优先于 `.env`。
+`.env` 已被 Git 忽略，不会进入发布归档。也可以不创建脚本旁的 `.env`，改用 `-EnvPath` 指向其他文件；GUI 还会自动发现 EXE 同目录的 `.env`。命令行的 `-LyricsTranslationFallback`、`-AiTranslationProvider` 优先于 `.env`；其他配置也可由同名进程环境变量提供，进程环境变量优先于 `.env`。
 
 翻译模式：
 
@@ -331,8 +341,8 @@ notepad .env
 
 仓库内置 GitHub Actions：
 
-- **CI**：Pull Request、推送到 `main`/`gui` 或手动运行时，在 Ubuntu 24.04 检查 Bash 语法、ShellCheck 和 Linux 转换器离线 dry-run；在 Windows Server 2025 使用固定的 .NET 8 SDK 还原、构建并检查 GUI，同时分别使用 PowerShell 7 与 Windows PowerShell 5.1 解析脚本、运行离线 smoke test，并执行关键 PSScriptAnalyzer 规则。
-- **CD**：推送指向 `main` 历史的 SemVer 标签（例如 `v2.7.0`）后，先复用完整 CI，再构建 framework-dependent `win-x64` GUI，生成 Windows ZIP、Linux tar.gz 和 `SHA256SUMS.txt`，最后发布或更新对应 GitHub Release。新标签生成的 Windows ZIP 会把 GUI 与根 PowerShell 启动文件、README 和安全的 `.env.example` 放在同一包内。
+- **CI**：Pull Request、推送到 `main`/`gui` 或手动运行时，在 Ubuntu 24.04 检查 Bash 语法、ShellCheck 和 Linux 转换器离线 dry-run；在 Windows Server 2025 使用固定的 .NET 8 SDK 还原、构建并检查 GUI（包括嵌入转换脚本），再验证 `win-x64` 自包含发布目录恰好只有一个 EXE；同时分别使用 PowerShell 7 与 Windows PowerShell 5.1 解析脚本、运行离线 smoke test，并执行关键 PSScriptAnalyzer 规则。
+- **CD**：推送指向 `main` 历史的 SemVer 标签（例如 `v2.7.0`）后，先复用完整 CI，再在 Windows 构建并实际自检自包含 `win-x64` 单 EXE；随后发布该精确 EXE、可选空白 `.env.example`、Linux tar.gz、内嵌 .NET Runtime 对应的许可证/第三方通知和 `SHA256SUMS.txt`。Windows 用户运行时仍只需下载 EXE，不再需要解压 ZIP、另放 PowerShell 脚本或安装 .NET Runtime。
 - GitHub Actions 依赖固定到完整提交 SHA，并由 Dependabot 每周检查更新；CI 只拥有仓库读取权限，只有发布作业拥有 `contents: write`。
 
 发布新版本：
@@ -344,7 +354,7 @@ git tag v2.7.0
 git push origin v2.7.0
 ```
 
-发布归档只包含对应平台的脚本、README、Windows GUI 运行文件，以及 Windows 包中的空白 `.env.example` 模板；绝不包含真实 `.env`、API Key、BIN、音频、缓存、歌词或本地生成的元数据。
+Release 直接提供 Windows 单 EXE和空白 `.env.example`，Linux tar.gz 仍只包含 Linux 脚本与 README；同页的 .NET `LICENSE` 与 `THIRD-PARTY-NOTICES` 是内嵌 Runtime 的许可资料，不是运行依赖。Release 绝不包含真实 `.env`、API Key、BIN、音频、缓存、歌词或本地生成的元数据。
 
 ## 本地歌词命名
 
@@ -437,7 +447,7 @@ sha256sum --check SHA256SUMS
 - 逐轨国内匹配仍要求候选属于同名专辑；国内平台只把附赠曲收录在另一张专辑时会保留 MusicBrainz 标签并继续使用后续歌词源，这是有意的防误配策略。
 - CD 音频本身通常不包含可搜索的专辑名，因此 MusicBrainz 仍承担首要 Disc ID/TOC 身份识别。若 MusicBrainz 完全没有该光盘，脚本只会采用同目录已有 JSON、TOC CD-TEXT 或结构明确的目录名作为提示；国内候选未通过整专轨数和时长校验时仍降级为基础轨号，不会仅凭名字猜专辑。
 - 在线查询会向元数据服务发送 Disc ID、专辑/歌曲名称和时长，不会上传音频内容。
-- 只有显式配置并启用翻译回退后，歌词原文才会发送给所选 Google 或 AI API；曲名/艺人/专辑上下文只发送给 AI API 用于消歧。音频文件始终只在本地处理。API 可能产生费用，并受对应服务商的隐私和数据保留政策约束。
+- 只有显式配置并启用翻译回退后，歌词原文才会发送给所选 Google 或 AI API；曲名/艺人/专辑上下文只发送给 AI API 用于消歧。音频文件始终只在本地处理。API 可能产生费用，并受对应服务商的隐私和数据保留政策约束。GUI 的 Key 不进入参数、预览、日志、EXE 或 Release；选择记住时，设置文件中也只保存当前 Windows 用户 DPAPI 密文。
 - 网易云音乐接口不是稳定的公开开发者 API，若服务端以后改变响应格式，脚本会安全回退到 MusicBrainz 标题，不会阻止音频转换。
 - 请仅归档和转换你有权处理的光盘与歌词。
 
@@ -457,4 +467,4 @@ sha256sum --check SHA256SUMS
 
 ## 安全说明
 
-仓库不包含服务器地址、账号、密码、API Token、光盘镜像、缓存或用户媒体文件。`.env.example` 只有空白占位符；真实 `.env` 已被忽略且不会打入发布包。运行前请检查输出目录权限，妥善保存生成的 BIN 文件和 API Key。
+仓库不包含服务器地址、账号、密码、API Token、光盘镜像、缓存或用户媒体文件。`.env.example` 只有空白占位符；真实 `.env` 已被忽略且不会打入发布包。GUI 不会把 Key 写入命令行、预览、日志、EXE 或 Release；只有用户主动选择记住时，`settings.json` 才保存 Windows 当前用户 DPAPI 密文。运行前请检查输出目录权限，妥善保存生成的 BIN 文件和 API Key。
