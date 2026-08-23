@@ -105,6 +105,7 @@ try {
         'Get-TranslationConfigurationValue',
         'Clear-TranslationProcessEnvironment',
         'Resolve-TranslationServiceUrl',
+        'Get-ConsumerTranslationProviderDisabledReason',
         'Get-ObjectProperty',
         'ConvertTo-MatchText',
         'Get-Sha256Text',
@@ -129,6 +130,10 @@ try {
         'Split-LyricsTranslationBatches',
         'Test-ObjectPropertySet',
         'ConvertFrom-AiLyricsTranslationResponse',
+        'ConvertFrom-MicrosoftTranslatorResponse',
+        'ConvertFrom-GoogleGtxTranslationResponse',
+        'ConvertFrom-BingTranslatorBootstrapHtml',
+        'ConvertFrom-BingTranslatorResponse',
         'ConvertFrom-LyricsTranslationCache',
         'Assert-LyricsTranslationAlignment',
         'Expand-LyricsTranslations',
@@ -221,6 +226,9 @@ BAD KEY=do-not-display-this-secret
         'AI_TRANSLATION_PROVIDER',
         'GOOGLE_TRANSLATE_API_KEY',
         'GOOGLE_TRANSLATE_BASE_URL',
+        'MICROSOFT_TRANSLATOR_API_KEY',
+        'MICROSOFT_TRANSLATOR_BASE_URL',
+        'MICROSOFT_TRANSLATOR_REGION',
         'OPENAI_API_KEY',
         'OPENAI_BASE_URL',
         'OPENAI_MODEL',
@@ -240,11 +248,13 @@ BAD KEY=do-not-display-this-secret
             [Environment]::SetEnvironmentVariable($name, $null, [EnvironmentVariableTarget]::Process)
         }
         $configuredServices = @{
-            GOOGLE_TRANSLATE_API_KEY = 'google-test-key'
-            OPENAI_API_KEY           = 'openai-test-key'
-            OPENAI_MODEL             = 'openai-test-model'
-            ANTHROPIC_API_KEY        = 'anthropic-test-key'
-            ANTHROPIC_MODEL          = 'anthropic-test-model'
+            GOOGLE_TRANSLATE_API_KEY      = 'google-test-key'
+            MICROSOFT_TRANSLATOR_API_KEY = 'microsoft-test-key'
+            MICROSOFT_TRANSLATOR_REGION  = 'eastus2'
+            OPENAI_API_KEY                = 'openai-test-key'
+            OPENAI_MODEL                  = 'openai-test-model'
+            ANTHROPIC_API_KEY             = 'anthropic-test-key'
+            ANTHROPIC_MODEL               = 'anthropic-test-model'
         }
         $defaultSettings = Resolve-LyricsTranslationSettings `
             -Mode 'Auto' `
@@ -252,21 +262,35 @@ BAD KEY=do-not-display-this-secret
             -DotEnvValues $configuredServices `
             -EnvironmentDirectory $temporaryRoot
         Assert-Equal 'AIThenGoogle' $defaultSettings.Mode 'Auto defaults to AI before Google'
-        Assert-Equal 'OpenAI,Anthropic,Google' (@($defaultSettings.Providers) -join ',') 'all configured AI formats run before Google'
+        Assert-Equal 'OpenAI,Anthropic,Google,Microsoft,GoogleGtx,BingWeb' (@($defaultSettings.Providers) -join ',') 'default order uses configured APIs before GTX and Bing no-key fallbacks'
 
         $googleOnlySettings = Resolve-LyricsTranslationSettings `
             -Mode 'AIThenGoogle' `
             -AiProvider 'Auto' `
             -DotEnvValues @{ GOOGLE_TRANSLATE_API_KEY = 'google-test-key' } `
             -EnvironmentDirectory $temporaryRoot
-        Assert-Equal 'Google' (@($googleOnlySettings.Providers) -join ',') 'AI-first mode falls back to Google when no AI format is configured'
+        Assert-Equal 'Google,GoogleGtx,BingWeb' (@($googleOnlySettings.Providers) -join ',') 'Google mode retains both no-key fallbacks after the official API'
+
+        $noKeyOnlySettings = Resolve-LyricsTranslationSettings `
+            -Mode 'AIThenGoogle' `
+            -AiProvider 'Auto' `
+            -DotEnvValues @{} `
+            -EnvironmentDirectory $temporaryRoot
+        Assert-Equal 'GoogleGtx,BingWeb' (@($noKeyOnlySettings.Providers) -join ',') 'default mode still has GTX then Bing when no API key is configured'
+
+        $aiOnlySettings = Resolve-LyricsTranslationSettings `
+            -Mode 'AI' `
+            -AiProvider 'Auto' `
+            -DotEnvValues $configuredServices `
+            -EnvironmentDirectory $temporaryRoot
+        Assert-Equal 'OpenAI,Anthropic' (@($aiOnlySettings.Providers) -join ',') 'AI-only mode does not call undocumented no-key services'
 
         $legacyOrderSettings = Resolve-LyricsTranslationSettings `
             -Mode 'GoogleThenAI' `
             -AiProvider 'Auto' `
             -DotEnvValues $configuredServices `
             -EnvironmentDirectory $temporaryRoot
-        Assert-Equal 'Google,OpenAI,Anthropic' (@($legacyOrderSettings.Providers) -join ',') 'an explicit legacy Google-first order remains supported'
+        Assert-Equal 'Google,Microsoft,OpenAI,Anthropic,GoogleGtx,BingWeb' (@($legacyOrderSettings.Providers) -join ',') 'legacy Google-first mode preserves configured API order while keeping no-key services last'
 
         foreach ($name in $translationEnvironmentNames) {
             [Environment]::SetEnvironmentVariable($name, 'must-not-reach-ffmpeg', [EnvironmentVariableTarget]::Process)
@@ -347,10 +371,14 @@ BAD KEY=do-not-display-this-secret
     Assert-Equal 'QQ Music' $lyricalSelection.Lyrics.Source 'substantive lyrics win over an earlier instrumental marker'
 
     $script:translationProviderCalls = [System.Collections.Generic.List[string]]::new()
-    $script:openAiTranslationShouldFail = $false
-    $script:googleTranslationShouldFail = $false
+    $script:translationProvidersThatFail = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $script:translationProvidersWithCache = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $script:UnavailableConsumerTranslationProviders = @{}
     function Get-CachedLyricsTranslation {
         param($CachePath, $Payload, $Provider, $Model, $ServiceHash, $ContextHash, $PromptHash)
+        if ($script:translationProvidersWithCache.Contains([string] $Provider)) {
+            return New-TestTranslations -Items @($Payload.Items) -Prefix '缓存译文'
+        }
         return $null
     }
     function Save-LyricsTranslationCache {
@@ -369,7 +397,7 @@ BAD KEY=do-not-display-this-secret
     function Invoke-OpenAiLyricsTranslation {
         param($Items, $Settings, $Title, $Artist, $Album)
         $script:translationProviderCalls.Add('OpenAI')
-        if ($script:openAiTranslationShouldFail) {
+        if ($script:translationProvidersThatFail.Contains('OpenAI')) {
             throw 'simulated OpenAI failure'
         }
         return New-TestTranslations -Items @($Items) -Prefix 'AI译文'
@@ -377,15 +405,42 @@ BAD KEY=do-not-display-this-secret
     function Invoke-AnthropicLyricsTranslation {
         param($Items, $Settings, $Title, $Artist, $Album)
         $script:translationProviderCalls.Add('Anthropic')
-        throw 'Anthropic should not be called in this test'
+        if ($script:translationProvidersThatFail.Contains('Anthropic')) {
+            throw 'simulated Anthropic failure'
+        }
+        return New-TestTranslations -Items @($Items) -Prefix 'Anthropic译文'
     }
     function Invoke-GoogleLyricsTranslation {
         param($Items, $Settings)
         $script:translationProviderCalls.Add('Google')
-        if ($script:googleTranslationShouldFail) {
+        if ($script:translationProvidersThatFail.Contains('Google')) {
             throw 'simulated Google failure'
         }
         return New-TestTranslations -Items @($Items) -Prefix '谷歌译文'
+    }
+    function Invoke-MicrosoftLyricsTranslation {
+        param($Items, $Settings)
+        $script:translationProviderCalls.Add('Microsoft')
+        if ($script:translationProvidersThatFail.Contains('Microsoft')) {
+            throw 'simulated Microsoft failure'
+        }
+        return New-TestTranslations -Items @($Items) -Prefix '微软译文'
+    }
+    function Invoke-GoogleGtxLyricsTranslation {
+        param($Items, $Settings)
+        $script:translationProviderCalls.Add('GoogleGtx')
+        if ($script:translationProvidersThatFail.Contains('GoogleGtx')) {
+            throw 'simulated GTX failure'
+        }
+        return New-TestTranslations -Items @($Items) -Prefix 'GTX译文'
+    }
+    function Invoke-BingWebLyricsTranslation {
+        param($Items, $Settings)
+        $script:translationProviderCalls.Add('BingWeb')
+        if ($script:translationProvidersThatFail.Contains('BingWeb')) {
+            throw 'simulated Bing failure'
+        }
+        return New-TestTranslations -Items @($Items) -Prefix 'Bing译文'
     }
 
     $fallbackSourceLyrics = [pscustomobject]@{
@@ -399,18 +454,25 @@ BAD KEY=do-not-display-this-secret
         Id                   = 'netease-test-id'
     }
     $fallbackSettings = [pscustomobject]@{
-        Providers          = @('OpenAI', 'Google')
+        Providers          = @('OpenAI', 'Anthropic', 'Google', 'Microsoft', 'GoogleGtx', 'BingWeb')
         OpenAiModel        = 'openai-test-model'
         OpenAiBaseUrl      = 'https://api.openai.com/v1'
+        AnthropicModel     = 'anthropic-test-model'
+        AnthropicBaseUrl   = 'https://api.anthropic.com/v1'
+        AnthropicVersion   = '2023-06-01'
         GoogleEndpoint     = 'https://translation.googleapis.com/language/translate/v2'
+        MicrosoftEndpoint  = 'https://api.cognitive.microsofttranslator.com'
+        MicrosoftRegion    = 'eastus2'
+        GoogleGtxEndpoint  = 'https://translate.googleapis.com/translate_a/single'
+        BingTranslatorPage = 'https://www.bing.com/translator'
+        BingTranslatorEndpoint = 'https://www.bing.com/ttranslatev3'
         PromptHash         = 'test-prompt-hash'
         GoogleApiKey       = 'google-test-key'
     }
     $translationCacheRoot = Join-Path $temporaryRoot 'translation-cache'
 
     $script:translationProviderCalls.Clear()
-    $script:openAiTranslationShouldFail = $false
-    $script:googleTranslationShouldFail = $false
+    $script:translationProvidersThatFail.Clear()
     $aiResolution = Resolve-ChineseLyricsTranslationFallback `
         -LyricsResult $fallbackSourceLyrics `
         -Settings $fallbackSettings `
@@ -423,8 +485,23 @@ BAD KEY=do-not-display-this-secret
     Assert-Equal 'OpenAI' (@($script:translationProviderCalls) -join ',') 'Google is not called after AI succeeds'
 
     $script:translationProviderCalls.Clear()
-    $script:openAiTranslationShouldFail = $true
-    $script:googleTranslationShouldFail = $false
+    $script:translationProvidersThatFail.Clear()
+    $null = $script:translationProvidersThatFail.Add('OpenAI')
+    $anthropicResolution = Resolve-ChineseLyricsTranslationFallback `
+        -LyricsResult $fallbackSourceLyrics `
+        -Settings $fallbackSettings `
+        -CacheRoot $translationCacheRoot `
+        -Title 'Test title' `
+        -Artist 'Test artist' `
+        -Album 'Test album' `
+        3>$null
+    Assert-True $anthropicResolution.Applied 'Anthropic is applied after OpenAI fails'
+    Assert-Equal 'Anthropic' $anthropicResolution.Lyrics.TranslationProvider 'Anthropic is recorded as the second AI provider'
+    Assert-Equal 'OpenAI,Anthropic' (@($script:translationProviderCalls) -join ',') 'AI providers are tried before cloud translation APIs'
+
+    $script:translationProviderCalls.Clear()
+    $script:translationProvidersThatFail.Clear()
+    foreach ($name in @('OpenAI', 'Anthropic')) { $null = $script:translationProvidersThatFail.Add($name) }
     $googleResolution = Resolve-ChineseLyricsTranslationFallback `
         -LyricsResult $fallbackSourceLyrics `
         -Settings $fallbackSettings `
@@ -435,11 +512,75 @@ BAD KEY=do-not-display-this-secret
         3>$null
     Assert-True $googleResolution.Applied 'Google is applied after AI fails'
     Assert-Equal 'Google' $googleResolution.Lyrics.TranslationProvider 'Google is recorded as the fallback provider'
-    Assert-Equal 'OpenAI,Google' (@($script:translationProviderCalls) -join ',') 'machine translation calls AI before Google'
+    Assert-Equal 'OpenAI,Anthropic,Google' (@($script:translationProviderCalls) -join ',') 'machine translation calls both AI formats before Google'
 
     $script:translationProviderCalls.Clear()
-    $script:openAiTranslationShouldFail = $true
-    $script:googleTranslationShouldFail = $true
+    $script:translationProvidersThatFail.Clear()
+    foreach ($name in @('OpenAI', 'Anthropic', 'Google')) { $null = $script:translationProvidersThatFail.Add($name) }
+    $microsoftResolution = Resolve-ChineseLyricsTranslationFallback `
+        -LyricsResult $fallbackSourceLyrics `
+        -Settings $fallbackSettings `
+        -CacheRoot $translationCacheRoot `
+        -Title 'Test title' `
+        -Artist 'Test artist' `
+        -Album 'Test album' `
+        3>$null
+    Assert-True $microsoftResolution.Applied 'Microsoft Azure is applied after Google Cloud fails'
+    Assert-Equal 'Microsoft' $microsoftResolution.Lyrics.TranslationProvider 'Microsoft is recorded as the official API fallback'
+    Assert-Equal 'OpenAI,Anthropic,Google,Microsoft' (@($script:translationProviderCalls) -join ',') 'Microsoft follows Google Cloud'
+
+    $script:translationProviderCalls.Clear()
+    $script:translationProvidersThatFail.Clear()
+    foreach ($name in @('OpenAI', 'Anthropic', 'Google', 'Microsoft')) { $null = $script:translationProvidersThatFail.Add($name) }
+    $gtxResolution = Resolve-ChineseLyricsTranslationFallback `
+        -LyricsResult $fallbackSourceLyrics `
+        -Settings $fallbackSettings `
+        -CacheRoot $translationCacheRoot `
+        -Title 'Test title' `
+        -Artist 'Test artist' `
+        -Album 'Test album' `
+        3>$null
+    Assert-Equal 'GoogleGtx' $gtxResolution.Lyrics.TranslationProvider 'GTX is the first no-key fallback'
+    Assert-Equal 'OpenAI,Anthropic,Google,Microsoft,GoogleGtx' (@($script:translationProviderCalls) -join ',') 'GTX follows all configured official APIs'
+
+    $script:translationProviderCalls.Clear()
+    $script:translationProvidersThatFail.Clear()
+    foreach ($name in @('OpenAI', 'Anthropic', 'Google', 'Microsoft', 'GoogleGtx')) { $null = $script:translationProvidersThatFail.Add($name) }
+    $bingResolution = Resolve-ChineseLyricsTranslationFallback `
+        -LyricsResult $fallbackSourceLyrics `
+        -Settings $fallbackSettings `
+        -CacheRoot $translationCacheRoot `
+        -Title 'Test title' `
+        -Artist 'Test artist' `
+        -Album 'Test album' `
+        3>$null
+    Assert-Equal 'BingWeb' $bingResolution.Lyrics.TranslationProvider 'Bing is the final no-key fallback'
+    Assert-Equal 'OpenAI,Anthropic,Google,Microsoft,GoogleGtx,BingWeb' (@($script:translationProviderCalls) -join ',') 'Bing follows GTX'
+
+    $script:translationProviderCalls.Clear()
+    $script:translationProvidersThatFail.Clear()
+    $originalFallbackProviders = @($fallbackSettings.Providers)
+    $fallbackSettings.Providers = @('GoogleGtx')
+    $script:UnavailableConsumerTranslationProviders['Google GTX'] = 'simulated run-level circuit breaker'
+    $null = $script:translationProvidersWithCache.Add('GoogleGtx')
+    $cachedAfterCircuitBreaker = Resolve-ChineseLyricsTranslationFallback `
+        -LyricsResult $fallbackSourceLyrics `
+        -Settings $fallbackSettings `
+        -CacheRoot $translationCacheRoot `
+        -Title 'Test title' `
+        -Artist 'Test artist' `
+        -Album 'Test album' `
+        3>$null
+    Assert-True $cachedAfterCircuitBreaker.Applied 'a run-level circuit breaker does not hide an existing no-key translation cache'
+    Assert-Equal 'GoogleGtx' $cachedAfterCircuitBreaker.Lyrics.TranslationProvider 'the cached GTX result retains its provider identity'
+    Assert-Equal 0 $script:translationProviderCalls.Count 'a cached GTX result performs no network-provider call after circuit breaking'
+    $fallbackSettings.Providers = $originalFallbackProviders
+    $script:UnavailableConsumerTranslationProviders.Clear()
+    $script:translationProvidersWithCache.Clear()
+
+    $script:translationProviderCalls.Clear()
+    $script:translationProvidersThatFail.Clear()
+    foreach ($name in @('OpenAI', 'Anthropic', 'Google', 'Microsoft', 'GoogleGtx', 'BingWeb')) { $null = $script:translationProvidersThatFail.Add($name) }
     $failedResolution = Resolve-ChineseLyricsTranslationFallback `
         -LyricsResult $fallbackSourceLyrics `
         -Settings $fallbackSettings `
@@ -451,7 +592,7 @@ BAD KEY=do-not-display-this-secret
     Assert-True (-not $failedResolution.Applied) 'all provider failures preserve the source lyrics'
     Assert-Equal 'NetEase Cloud Music' $failedResolution.Lyrics.Source 'all provider failures preserve the original source'
     Assert-Equal 'netease-test-id' $failedResolution.Lyrics.Id 'all provider failures preserve the original source ID'
-    Assert-Equal 'OpenAI,Google' (@($script:translationProviderCalls) -join ',') 'all configured fallbacks are attempted in order'
+    Assert-Equal 'OpenAI,Anthropic,Google,Microsoft,GoogleGtx,BingWeb' (@($script:translationProviderCalls) -join ',') 'all configured fallbacks are attempted in order'
 
     $creditedJapaneseLyrics = "作词：张三`n作曲：李四`n夜空を見上げて"
     $creditedJapanesePayload = Get-LyricsTranslationPayload -LyricsResult ([pscustomobject]@{
@@ -590,6 +731,33 @@ BAD KEY=do-not-display-this-secret
     $singleValidAiJson = '{"schema":"lyrics-zh-hans-v1","request_id":"single","lines":[{"id":"L000001","text":"仰望夜空"}]}'
     $singleValidAiTranslations = @(ConvertFrom-AiLyricsTranslationResponse -Content $singleValidAiJson -RequestId 'single' -ExpectedItems $singleExpectedAiItem)
     Assert-Equal 1 $singleValidAiTranslations.Count 'a one-element JSON lines array remains valid'
+
+    $microsoftResponse = '[{"detectedLanguage":{"language":"ja","score":1.0},"translations":[{"text":"仰望夜空","to":"zh-Hans"}]},{"detectedLanguage":{"language":"ja","score":1.0},"translations":[{"text":"寻找你的声音","to":"zh-Hans"}]}]' | ConvertFrom-Json
+    $microsoftTranslations = @(ConvertFrom-MicrosoftTranslatorResponse -Response $microsoftResponse -ExpectedItems $expectedAiItems)
+    Assert-Equal '仰望夜空' $microsoftTranslations[0].Text 'Microsoft Translator response keeps the first translated line'
+    Assert-Equal 'L000002' $microsoftTranslations[1].Id 'Microsoft Translator response preserves stable local ids'
+    $singleMicrosoftRequestJson = ConvertTo-Json -InputObject ([object[]] @([ordered]@{ Text = '夜空を見上げて' })) -Depth 5 -Compress
+    Assert-True $singleMicrosoftRequestJson.StartsWith('[', [StringComparison]::Ordinal) 'a one-line Microsoft request remains a JSON array'
+    Assert-Throws {
+        ConvertFrom-MicrosoftTranslatorResponse -Response @($microsoftResponse[0]) -ExpectedItems $expectedAiItems
+    } 'expected 2' 'Microsoft Translator count mismatches are rejected'
+
+    $gtxText = ConvertFrom-GoogleGtxTranslationResponse -ResponseText '[[["仰望","夜空",null,null,1],["夜空","を見上げて",null,null,1]],null,"ja"]'
+    Assert-Equal '仰望夜空' $gtxText 'GTX response segments are joined without losing text'
+    Assert-Throws {
+        ConvertFrom-GoogleGtxTranslationResponse -ResponseText '<html>automated queries</html>'
+    } 'non-JSON' 'GTX HTML rate-limit pages are rejected rather than cached as lyrics'
+
+    $bingBootstrapHtml = '<script>var params_AbusePreventionHelper = [1234567890123,"TOKEN_value_12345678901234567890",3600000]; var IG:"ABCDEF0123456789ABCDEF0123456789";</script><div data-iid="translator.5028.1"></div>'
+    $bingBootstrap = ConvertFrom-BingTranslatorBootstrapHtml -Html $bingBootstrapHtml
+    Assert-Equal '1234567890123' $bingBootstrap.Key 'Bing bootstrap parser extracts the ephemeral request key'
+    Assert-Equal 'translator.5028.1' $bingBootstrap.Iid 'Bing bootstrap parser extracts a validated IID'
+    $bingText = ConvertFrom-BingTranslatorResponse -ResponseText '[{"translations":[{"text":"仰望夜空","to":"zh-Hans"}],"detectedLanguage":{"language":"ja","score":1.0}}]'
+    Assert-Equal '仰望夜空' $bingText 'Bing response parser extracts translated text'
+    Assert-Throws {
+        ConvertFrom-BingTranslatorResponse -ResponseText '{"ShowCaptcha":true}'
+    } 'CAPTCHA' 'Bing CAPTCHA responses are rejected and never cached as lyrics'
+
     Assert-Throws {
         ConvertFrom-AiLyricsTranslationResponse `
             -Content '{"schema":"lyrics-zh-hans-v1","request_id":"single","lines":{"id":"L000001","text":"仰望夜空"}}' `
@@ -665,6 +833,11 @@ BAD KEY=do-not-display-this-secret
     Assert-Equal 80 @($overflowBatches[0].Items).Count 'the first overflow batch stops at 80 lines'
     Assert-Equal 1 @($overflowBatches[1].Items).Count 'the second overflow batch contains the boundary item'
     Assert-Equal 'L000081' $overflowBatches[1].Items[0].Id 'batch splitting preserves the 81st line id'
+
+    $microsoftBatches = @(Split-LyricsTranslationBatches -Items @($batchItems[0..25]) -MaximumLines 25 -MaximumCharacters 5000)
+    Assert-Equal 2 $microsoftBatches.Count 'Microsoft Translator batching respects its 25-item request limit'
+    Assert-Equal 25 @($microsoftBatches[0].Items).Count 'Microsoft Translator first batch stops at 25 lines'
+    Assert-Equal 1 @($microsoftBatches[1].Items).Count 'Microsoft Translator carries the 26th line into the next request'
 
     Assert-Throws {
         Split-LyricsTranslationBatches `

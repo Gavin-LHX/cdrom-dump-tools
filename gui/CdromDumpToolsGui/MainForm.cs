@@ -32,12 +32,12 @@ internal sealed class MainForm : Form
         new("NetEaseFirst", "网易云音乐优先"),
         new("QQMusicFirst", "QQ 音乐优先"));
     private readonly ComboBox _lyricsFallbackComboBox = NewChoiceCombo(
-        new("Auto", "自动：AI → Google（推荐）"),
+        new("Auto", "自动：AI → Google → Microsoft → 免 Key（推荐）"),
         new("None", "关闭机器翻译"),
-        new("AIThenGoogle", "AI 优先，失败后 Google"),
-        new("GoogleThenAI", "Google 优先，失败后 AI"),
+        new("AIThenGoogle", "AI → Google/Microsoft → 免 Key"),
+        new("GoogleThenAI", "Google/Microsoft → AI → 免 Key"),
         new("AI", "仅 AI"),
-        new("Google", "仅 Google"));
+        new("Google", "Google/Microsoft → 免 Key"));
     private readonly ComboBox _aiProviderComboBox = NewChoiceCombo(
         new("Auto", "自动：OpenAI → Anthropic"),
         new("OpenAI", "OpenAI 兼容接口"),
@@ -323,7 +323,7 @@ internal sealed class MainForm : Form
         aiStatusPanel.Controls.Add(_aiSettingsButton, 1, 0);
         lyricsOptions.Controls.Add(aiStatusPanel, 0, 2);
         lyricsOptions.SetColumnSpan(aiStatusPanel, 4);
-        var lyricsHint = NewHintLabel("歌词固定按 网易云 → QQ 音乐 → LRCLIB 查询；仍无中文时按上面的策略调用 AI/Google 翻译。");
+        var lyricsHint = NewHintLabel("歌词源：网易云 → QQ 音乐 → LRCLIB。\n默认正式 API：OpenAI → Anthropic → Google Cloud → Microsoft Azure。\n免 Key 尽力回退：Google GTX → Bing（可能限流或变更）。");
         lyricsOptions.Controls.Add(lyricsHint, 0, 3);
         lyricsOptions.SetColumnSpan(lyricsHint, 4);
         lyricsPage.Controls.Add(lyricsOptions);
@@ -523,7 +523,7 @@ internal sealed class MainForm : Form
 
         _toolTip.SetToolTip(_releaseIndexInput, "0 表示非交互地使用第 1 个候选；1..1000 指定候选序号。");
         _toolTip.SetToolTip(_envTextBox, "高级兼容入口：GUI 只保存路径；日常使用请直接点击“配置模型与 API Key…”。");
-        _toolTip.SetToolTip(_aiSettingsButton, "直接配置 OpenAI、Anthropic、Google 的模型、兼容端点和 API Key。");
+        _toolTip.SetToolTip(_aiSettingsButton, "配置 OpenAI、Anthropic、Google Cloud 与 Microsoft Azure 的正式/兼容端点和 API Key；免 Key 回退无需配置。");
     }
 
     private void LoadSettingsIntoControls()
@@ -674,7 +674,7 @@ internal sealed class MainForm : Form
             AppendLog("PowerShell: " + powerShellPath);
             AppendLog("命令: " + ConverterCommand.CreateSafePreview(powerShellPath!, startInfo.ArgumentList.ToArray()));
             AppendLog("AI 配置: " + (useMachineTranslationConfiguration
-                ? AiTranslationEnvironment.CreateSafeSummary(_aiConfiguration)
+                ? CreateTranslationConfigurationSummary(options)
                 : "本次转换未启用机器翻译"));
             AppendLog(string.Empty);
 
@@ -1136,28 +1136,47 @@ internal sealed class MainForm : Form
             aiServices.Add($"Anthropic ({_aiConfiguration.AnthropicModel.Trim()})");
         }
         var googleService = usesGoogle && !string.IsNullOrWhiteSpace(_aiConfiguration.GoogleApiKey)
-            ? "Google Translate"
+            ? "Google Cloud Translation"
             : null;
+        var microsoftService = usesGoogle && !string.IsNullOrWhiteSpace(_aiConfiguration.MicrosoftApiKey)
+            ? "Microsoft Translator (Azure)"
+            : null;
+        var cloudServices = new[] { googleService, microsoftService }
+            .Where(service => service is not null)
+            .Cast<string>()
+            .ToList();
         var relevantServices = new List<string>();
-        if (string.Equals(fallback, "GoogleThenAI", StringComparison.Ordinal) && googleService is not null)
+        if (string.Equals(fallback, "GoogleThenAI", StringComparison.Ordinal))
         {
-            relevantServices.Add(googleService);
+            relevantServices.AddRange(cloudServices);
         }
         relevantServices.AddRange(aiServices);
-        if (!string.Equals(fallback, "GoogleThenAI", StringComparison.Ordinal) && googleService is not null)
+        if (!string.Equals(fallback, "GoogleThenAI", StringComparison.Ordinal))
         {
-            relevantServices.Add(googleService);
+            relevantServices.AddRange(cloudServices);
         }
 
         if (relevantServices.Count == 0)
         {
-            _aiStatusLabel.Text = "本轮所选策略在 GUI 中未配置完整服务；如有 .env，将继续尝试其中的配置。";
+            _aiStatusLabel.Text = usesGoogle
+                ? "正式 API 未配置；将用免 Key 回退：Google GTX → Bing（尽力而为，也会读取 .env）。"
+                : "本轮仅使用 AI，但 GUI 中未配置完整服务；如有 .env，将继续尝试其中的配置。";
             _aiStatusLabel.ForeColor = Color.FromArgb(154, 93, 0);
             return;
         }
 
-        _aiStatusLabel.Text = "GUI 已配置：" + string.Join(" → ", relevantServices);
+        _aiStatusLabel.Text = "正式 API：" + string.Join(" → ", relevantServices)
+            + (usesGoogle ? "\n免 Key 回退：Google GTX → Bing（尽力而为）。" : string.Empty);
         _aiStatusLabel.ForeColor = Color.FromArgb(22, 120, 72);
+    }
+
+    private string CreateTranslationConfigurationSummary(ConversionOptions options)
+    {
+        var summary = AiTranslationEnvironment.CreateSafeSummary(_aiConfiguration);
+        var usesNoKeyFallbacks = options.LyricsTranslationFallback is "Auto" or "Google" or "AIThenGoogle" or "GoogleThenAI";
+        return usesNoKeyFallbacks
+            ? summary + "；免 Key 尽力回退：Google GTX → Bing"
+            : summary;
     }
 
     private void ApplyProgressEvent(ConversionProgressEvent progressEvent)

@@ -45,6 +45,8 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $workDirectory = $null
 $script:LastRequestUtcByThrottleKey = @{}
+$script:UnavailableConsumerTranslationProviders = @{}
+$script:BingTranslatorSessionState = $null
 
 function Wait-ForExitKey {
     param([switch] $Skip)
@@ -151,6 +153,9 @@ function Clear-TranslationProcessEnvironment {
         'AI_TRANSLATION_PROVIDER',
         'GOOGLE_TRANSLATE_API_KEY',
         'GOOGLE_TRANSLATE_BASE_URL',
+        'MICROSOFT_TRANSLATOR_API_KEY',
+        'MICROSOFT_TRANSLATOR_BASE_URL',
+        'MICROSOFT_TRANSLATOR_REGION',
         'OPENAI_API_KEY',
         'OPENAI_BASE_URL',
         'OPENAI_MODEL',
@@ -2756,6 +2761,12 @@ function Resolve-LyricsTranslationSettings {
         -Value (Get-TranslationConfigurationValue -Name 'GOOGLE_TRANSLATE_BASE_URL' -DotEnvValues $DotEnvValues -DefaultValue 'https://translation.googleapis.com/language/translate/v2') `
         -ConfigurationName 'GOOGLE_TRANSLATE_BASE_URL'
 
+    $microsoftApiKey = Get-TranslationConfigurationValue -Name 'MICROSOFT_TRANSLATOR_API_KEY' -DotEnvValues $DotEnvValues
+    $microsoftEndpoint = Resolve-TranslationServiceUrl `
+        -Value (Get-TranslationConfigurationValue -Name 'MICROSOFT_TRANSLATOR_BASE_URL' -DotEnvValues $DotEnvValues -DefaultValue 'https://api.cognitive.microsofttranslator.com') `
+        -ConfigurationName 'MICROSOFT_TRANSLATOR_BASE_URL'
+    $microsoftRegion = Get-TranslationConfigurationValue -Name 'MICROSOFT_TRANSLATOR_REGION' -DotEnvValues $DotEnvValues
+
     $openAiApiKey = Get-TranslationConfigurationValue -Name 'OPENAI_API_KEY' -DotEnvValues $DotEnvValues
     $openAiBaseUrl = Resolve-TranslationServiceUrl `
         -Value (Get-TranslationConfigurationValue -Name 'OPENAI_BASE_URL' -DotEnvValues $DotEnvValues -DefaultValue 'https://api.openai.com/v1') `
@@ -2799,16 +2810,31 @@ function Resolve-LyricsTranslationSettings {
         default { @() }
     }
     $providers = [System.Collections.Generic.List[string]]::new()
+    $includeConsumerFallbacks = $false
     foreach ($category in $categories) {
-        if ($category -eq 'Google' -and -not [string]::IsNullOrWhiteSpace($googleApiKey) -and
-            -not [string]::IsNullOrWhiteSpace($googleEndpoint)) {
-            $providers.Add('Google')
+        if ($category -eq 'Google') {
+            $includeConsumerFallbacks = $true
+            if (-not [string]::IsNullOrWhiteSpace($googleApiKey) -and
+                -not [string]::IsNullOrWhiteSpace($googleEndpoint)) {
+                $providers.Add('Google')
+            }
+            if (-not [string]::IsNullOrWhiteSpace($microsoftApiKey) -and
+                -not [string]::IsNullOrWhiteSpace($microsoftEndpoint)) {
+                $providers.Add('Microsoft')
+            }
         }
         elseif ($category -eq 'AI') {
             foreach ($providerName in $aiProviders) {
                 $providers.Add($providerName)
             }
         }
+    }
+    if ($includeConsumerFallbacks) {
+        # Undocumented consumer endpoints are deliberately kept behind every
+        # configured provider. They are best-effort fallbacks, not substitutes
+        # for the supported Google Cloud or Azure Translator contracts.
+        $providers.Add('GoogleGtx')
+        $providers.Add('BingWeb')
     }
 
     return [pscustomobject]@{
@@ -2817,6 +2843,12 @@ function Resolve-LyricsTranslationSettings {
         Providers            = @($providers)
         GoogleApiKey         = $googleApiKey
         GoogleEndpoint       = $googleEndpoint
+        MicrosoftApiKey      = $microsoftApiKey
+        MicrosoftEndpoint    = $microsoftEndpoint
+        MicrosoftRegion      = $microsoftRegion
+        GoogleGtxEndpoint    = 'https://translate.googleapis.com/translate_a/single'
+        BingTranslatorPage   = 'https://www.bing.com/translator'
+        BingTranslatorEndpoint = 'https://www.bing.com/ttranslatev3'
         OpenAiApiKey         = $openAiApiKey
         OpenAiBaseUrl        = $openAiBaseUrl
         OpenAiModel          = $openAiModel
@@ -3099,6 +3131,80 @@ function Protect-SensitiveText {
     return $safeText
 }
 
+function Disable-ConsumerTranslationProvider {
+    param(
+        [Parameter(Mandatory = $true)][string] $Provider,
+        [Parameter(Mandatory = $true)][string] $Reason
+    )
+
+    if (-not $script:UnavailableConsumerTranslationProviders.ContainsKey($Provider)) {
+        $script:UnavailableConsumerTranslationProviders[$Provider] = $Reason
+        Write-Warning "$Provider is unavailable for the remainder of this conversion: $Reason"
+    }
+}
+
+function Get-ConsumerTranslationProviderDisabledReason {
+    param([Parameter(Mandatory = $true)][string] $Provider)
+
+    if ($script:UnavailableConsumerTranslationProviders.ContainsKey($Provider)) {
+        return [string] $script:UnavailableConsumerTranslationProviders[$Provider]
+    }
+    return $null
+}
+
+function Invoke-ConsumerTranslationWebRequest {
+    param(
+        [Parameter(Mandatory = $true)][ValidateSet('Get', 'Post')][string] $Method,
+        [Parameter(Mandatory = $true)][string] $Uri,
+        [Parameter(Mandatory = $true)][hashtable] $Headers,
+        [hashtable] $Body,
+        [object] $WebSession,
+        [Parameter(Mandatory = $true)][string] $SourceName,
+        [string[]] $SensitiveValues = @(),
+        [ValidateRange(1, 2097152)][int] $MaximumResponseCharacters = 1048576,
+        [ValidateRange(0, 60000)][int] $MinimumIntervalMilliseconds = 0,
+        [string] $ThrottleKey
+    )
+
+    try {
+        Wait-WebRequestInterval -Uri $Uri -MinimumIntervalMilliseconds $MinimumIntervalMilliseconds -ThrottleKey $ThrottleKey
+        $requestParameters = @{
+            Method             = $Method
+            Uri                = $Uri
+            Headers            = $Headers
+            TimeoutSec         = 30
+            MaximumRedirection = 0
+            UseBasicParsing    = $true
+        }
+        if ($null -ne $WebSession) {
+            $requestParameters['WebSession'] = $WebSession
+        }
+        if ($Method -eq 'Post') {
+            $requestParameters['ContentType'] = 'application/x-www-form-urlencoded; charset=UTF-8'
+            $requestParameters['Body'] = $Body
+        }
+        $response = Invoke-WebRequest @requestParameters
+        $responseText = Get-Utf8WebResponseText -Response $response
+        if ([string]::IsNullOrWhiteSpace($responseText)) {
+            throw [Net.WebException]::new("$SourceName returned an empty response.")
+        }
+        if ($responseText.Length -gt $MaximumResponseCharacters) {
+            throw [IO.InvalidDataException]::new("$SourceName response exceeded the safety limit.")
+        }
+        return $responseText
+    }
+    catch {
+        $statusCode = Get-WebExceptionStatusCode -Exception $_.Exception
+        $safeMessage = Protect-SensitiveText -Text $_.Exception.Message -SensitiveValues $SensitiveValues
+        $statusText = if ($null -ne $statusCode) { "HTTP $statusCode; " } else { '' }
+        $wrapped = [InvalidOperationException]::new("$SourceName request failed: $statusText$safeMessage", $_.Exception)
+        if ($null -ne $statusCode) {
+            $wrapped.Data['StatusCode'] = [int] $statusCode
+        }
+        throw $wrapped
+    }
+}
+
 function Invoke-TranslationJsonPost {
     param(
         [Parameter(Mandatory = $true)][string] $Uri,
@@ -3111,7 +3217,7 @@ function Invoke-TranslationJsonPost {
         [string] $ThrottleKey
     )
 
-    $json = $Body | ConvertTo-Json -Depth 20 -Compress
+    $json = ConvertTo-Json -InputObject $Body -Depth 20 -Compress
     [byte[]] $bodyBytes = [Text.Encoding]::UTF8.GetBytes($json)
     $lastException = $null
     for ($attempt = 1; $attempt -le $MaximumAttempts; $attempt++) {
@@ -3340,6 +3446,281 @@ function Invoke-GoogleLyricsTranslation {
         }
     }
     return Expand-LyricsTranslations -AllItems $Items -UniqueItems $uniqueItems -UniqueTranslations @($uniqueTranslations)
+}
+
+function ConvertFrom-MicrosoftTranslatorResponse {
+    param(
+        [Parameter(Mandatory = $true)][object] $Response,
+        [Parameter(Mandatory = $true)][object[]] $ExpectedItems
+    )
+
+    $responseItems = @($Response)
+    if ($responseItems.Count -ne $ExpectedItems.Count) {
+        throw "Microsoft Translator returned $($responseItems.Count) lines; expected $($ExpectedItems.Count)."
+    }
+    $translations = [System.Collections.Generic.List[object]]::new()
+    for ($index = 0; $index -lt $ExpectedItems.Count; $index++) {
+        $candidates = @((Get-ObjectProperty -Object $responseItems[$index] -Name 'translations'))
+        $candidate = @($candidates | Where-Object {
+            [string](Get-ObjectProperty -Object $_ -Name 'to') -in @('zh-Hans', 'zh-CN')
+        } | Select-Object -First 1)
+        if ($candidate.Count -eq 0 -and $candidates.Count -gt 0) {
+            $candidate = @($candidates[0])
+        }
+        if ($candidate.Count -ne 1) {
+            throw "Microsoft Translator returned no translation for line $($index + 1)."
+        }
+        $textValue = $candidate[0].PSObject.Properties['text'].Value
+        if ($textValue -isnot [string] -or [string]::IsNullOrWhiteSpace($textValue)) {
+            throw "Microsoft Translator returned invalid text for line $($index + 1)."
+        }
+        $translations.Add([pscustomobject]@{
+            Id   = [string](Get-ObjectProperty -Object $ExpectedItems[$index] -Name 'Id')
+            Text = [Net.WebUtility]::HtmlDecode([string] $textValue).Trim()
+        })
+    }
+    return @($translations)
+}
+
+function Invoke-MicrosoftLyricsTranslation {
+    param(
+        [Parameter(Mandatory = $true)][object[]] $Items,
+        [Parameter(Mandatory = $true)][object] $Settings
+    )
+
+    $uniqueItems = @(Get-UniqueLyricsTranslationItems -Items $Items)
+    $uniqueTranslations = [System.Collections.Generic.List[object]]::new()
+    foreach ($batchInfo in @(Split-LyricsTranslationBatches -Items $uniqueItems -MaximumLines 25 -MaximumCharacters 4500)) {
+        $batch = @($batchInfo.Items)
+        $headers = @{
+            Accept                      = 'application/json'
+            'Ocp-Apim-Subscription-Key' = [string] $Settings.MicrosoftApiKey
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string] $Settings.MicrosoftRegion)) {
+            $headers['Ocp-Apim-Subscription-Region'] = [string] $Settings.MicrosoftRegion
+        }
+        $body = [object[]] @($batch | ForEach-Object {
+            [ordered]@{ Text = [string](Get-ObjectProperty -Object $_ -Name 'Text') }
+        })
+        $response = Invoke-TranslationJsonPost `
+            -Uri "$($Settings.MicrosoftEndpoint)/translate?api-version=3.0&to=zh-Hans" `
+            -Headers $headers `
+            -Body $body `
+            -SourceName 'Microsoft Azure Translator' `
+            -SensitiveValues @([string] $Settings.MicrosoftApiKey) `
+            -MinimumIntervalMilliseconds 100 `
+            -ThrottleKey 'microsoft-azure-translator'
+        foreach ($translation in @(ConvertFrom-MicrosoftTranslatorResponse -Response $response -ExpectedItems @($batch))) {
+            $uniqueTranslations.Add($translation)
+        }
+    }
+    return Expand-LyricsTranslations -AllItems $Items -UniqueItems $uniqueItems -UniqueTranslations @($uniqueTranslations)
+}
+
+function ConvertFrom-GoogleGtxTranslationResponse {
+    param([Parameter(Mandatory = $true)][string] $ResponseText)
+
+    $trimmed = $ResponseText.Trim()
+    if (-not $trimmed.StartsWith('[', [StringComparison]::Ordinal)) {
+        throw 'Google GTX returned a non-JSON response, possibly a rate-limit or automated-query page.'
+    }
+    $parsed = $trimmed | ConvertFrom-Json
+    $topLevel = @($parsed)
+    if ($topLevel.Count -eq 0 -or $topLevel[0] -isnot [Array]) {
+        throw 'Google GTX returned an unexpected response structure.'
+    }
+    $translatedParts = [System.Collections.Generic.List[string]]::new()
+    foreach ($segment in @($topLevel[0])) {
+        if ($segment -isnot [Array]) {
+            continue
+        }
+        $segmentValues = @($segment)
+        if ($segmentValues.Count -gt 0 -and $segmentValues[0] -is [string]) {
+            $translatedParts.Add([string] $segmentValues[0])
+        }
+    }
+    $translatedText = ($translatedParts -join '').Trim()
+    if ([string]::IsNullOrWhiteSpace($translatedText)) {
+        throw 'Google GTX returned no translated text.'
+    }
+    return $translatedText
+}
+
+function Invoke-GoogleGtxLyricsTranslation {
+    param(
+        [Parameter(Mandatory = $true)][object[]] $Items,
+        [Parameter(Mandatory = $true)][object] $Settings
+    )
+
+    $disabledReason = Get-ConsumerTranslationProviderDisabledReason -Provider 'Google GTX'
+    if (-not [string]::IsNullOrWhiteSpace($disabledReason)) {
+        throw "Google GTX was disabled earlier in this conversion: $disabledReason"
+    }
+    $uniqueItems = @(Get-UniqueLyricsTranslationItems -Items $Items)
+    $uniqueTranslations = [System.Collections.Generic.List[object]]::new()
+    try {
+        foreach ($item in $uniqueItems) {
+            $sourceText = [string](Get-ObjectProperty -Object $item -Name 'Text')
+            if ($sourceText.Length -gt 4500) {
+                throw 'A lyrics line exceeded the Google GTX safety limit of 4500 characters.'
+            }
+            $responseText = Invoke-ConsumerTranslationWebRequest `
+                -Method Post `
+                -Uri "$($Settings.GoogleGtxEndpoint)?client=gtx&sl=auto&tl=zh-CN&dt=t" `
+                -Headers @{
+                    Accept          = 'application/json,text/plain,*/*'
+                    'Accept-Language' = 'zh-CN,zh;q=0.9,en;q=0.8'
+                    'User-Agent'    = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/127 Safari/537.36'
+                } `
+                -Body @{ q = $sourceText } `
+                -SourceName 'Google Translate GTX no-key fallback' `
+                -MinimumIntervalMilliseconds 750 `
+                -ThrottleKey 'google-gtx-no-key'
+            $uniqueTranslations.Add([pscustomobject]@{
+                Id   = [string](Get-ObjectProperty -Object $item -Name 'Id')
+                Text = ConvertFrom-GoogleGtxTranslationResponse -ResponseText $responseText
+            })
+        }
+        return Expand-LyricsTranslations -AllItems $Items -UniqueItems $uniqueItems -UniqueTranslations @($uniqueTranslations)
+    }
+    catch {
+        if ($_.Exception.Message -notmatch '(?i:lyrics line exceeded the Google GTX safety limit)') {
+            Disable-ConsumerTranslationProvider -Provider 'Google GTX' -Reason 'the undocumented endpoint failed, changed format, or rejected automated traffic'
+        }
+        throw
+    }
+}
+
+function ConvertFrom-BingTranslatorBootstrapHtml {
+    param([Parameter(Mandatory = $true)][string] $Html)
+
+    if ($Html.Length -gt 2097152) {
+        throw 'Bing Translator bootstrap page exceeded the safety limit.'
+    }
+    $abuseMatch = [regex]::Match(
+        $Html,
+        'params_AbusePreventionHelper\s*=\s*\[(?<key>\d{6,20}),\s*"(?<token>[A-Za-z0-9_-]{8,512})",\s*(?<interval>\d{1,12})\]'
+    )
+    $igMatches = @([regex]::Matches($Html, '(?:"ig"|IG)\s*:\s*"(?<ig>[A-Fa-f0-9]{16,64})"'))
+    $iidMatches = @([regex]::Matches($Html, 'data-iid="(?<iid>[A-Za-z0-9._-]{1,128})"'))
+    if (-not $abuseMatch.Success -or $igMatches.Count -eq 0 -or $iidMatches.Count -eq 0) {
+        throw 'Bing Translator bootstrap fields were missing; the consumer page may have changed or requested a challenge.'
+    }
+    return [pscustomobject]@{
+        Key      = $abuseMatch.Groups['key'].Value
+        Token    = $abuseMatch.Groups['token'].Value
+        Interval = [int64] $abuseMatch.Groups['interval'].Value
+        Ig       = $igMatches[-1].Groups['ig'].Value
+        Iid      = $iidMatches[-1].Groups['iid'].Value
+    }
+}
+
+function ConvertFrom-BingTranslatorResponse {
+    param([Parameter(Mandatory = $true)][string] $ResponseText)
+
+    $trimmed = $ResponseText.Trim()
+    if (-not $trimmed.StartsWith('[', [StringComparison]::Ordinal)) {
+        if ($trimmed -match '(?i:ShowCaptcha|captcha)') {
+            throw 'Bing Translator requested a CAPTCHA.'
+        }
+        throw 'Bing Translator returned an unexpected non-array response.'
+    }
+    $parsed = $trimmed | ConvertFrom-Json
+    $entries = @($parsed)
+    if ($entries.Count -eq 0) {
+        throw 'Bing Translator returned an empty result array.'
+    }
+    $translations = @((Get-ObjectProperty -Object $entries[0] -Name 'translations'))
+    if ($translations.Count -eq 0) {
+        throw 'Bing Translator returned no translation.'
+    }
+    $textValue = $translations[0].PSObject.Properties['text'].Value
+    if ($textValue -isnot [string] -or [string]::IsNullOrWhiteSpace($textValue)) {
+        throw 'Bing Translator returned invalid translated text.'
+    }
+    return [Net.WebUtility]::HtmlDecode([string] $textValue).Trim()
+}
+
+function Invoke-BingWebLyricsTranslation {
+    param(
+        [Parameter(Mandatory = $true)][object[]] $Items,
+        [Parameter(Mandatory = $true)][object] $Settings
+    )
+
+    $disabledReason = Get-ConsumerTranslationProviderDisabledReason -Provider 'Bing Translator'
+    if (-not [string]::IsNullOrWhiteSpace($disabledReason)) {
+        throw "Bing Translator was disabled earlier in this conversion: $disabledReason"
+    }
+    $headers = @{
+        Accept            = 'application/json,text/plain,*/*'
+        'Accept-Language' = 'zh-CN,zh;q=0.9,en;q=0.8'
+        'User-Agent'      = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0'
+    }
+    try {
+        $sessionState = $script:BingTranslatorSessionState
+        if ($null -eq $sessionState -or [DateTime] $sessionState.ExpiresUtc -le [DateTime]::UtcNow) {
+            $webSession = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+            $headers['Accept'] = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+            $bootstrapHtml = Invoke-ConsumerTranslationWebRequest `
+                -Method Get `
+                -Uri ([string] $Settings.BingTranslatorPage) `
+                -Headers $headers `
+                -WebSession $webSession `
+                -SourceName 'Bing Translator no-key bootstrap' `
+                -MaximumResponseCharacters 2097152 `
+                -MinimumIntervalMilliseconds 750 `
+                -ThrottleKey 'bing-translator-no-key'
+            $bootstrap = ConvertFrom-BingTranslatorBootstrapHtml -Html $bootstrapHtml
+            $maximumLifetimeMilliseconds = [Math]::Min(3600000.0, [Math]::Max(60000.0, [double] $bootstrap.Interval))
+            $sessionState = [pscustomobject]@{
+                WebSession  = $webSession
+                Bootstrap   = $bootstrap
+                ExpiresUtc  = [DateTime]::UtcNow.AddMilliseconds($maximumLifetimeMilliseconds - 30000.0)
+            }
+            $script:BingTranslatorSessionState = $sessionState
+        }
+        $bootstrap = $sessionState.Bootstrap
+        $webSession = $sessionState.WebSession
+        $headers['Accept'] = 'application/json,text/plain,*/*'
+        $headers['Referer'] = [string] $Settings.BingTranslatorPage
+        $translateUri = "$($Settings.BingTranslatorEndpoint)?IG=$([Uri]::EscapeDataString($bootstrap.Ig))&IID=$([Uri]::EscapeDataString($bootstrap.Iid))"
+        $uniqueItems = @(Get-UniqueLyricsTranslationItems -Items $Items)
+        $uniqueTranslations = [System.Collections.Generic.List[object]]::new()
+        foreach ($item in $uniqueItems) {
+            $sourceText = [string](Get-ObjectProperty -Object $item -Name 'Text')
+            if ($sourceText.Length -gt 1000) {
+                throw 'A lyrics line exceeded the Bing Translator no-key safety limit of 1000 characters.'
+            }
+            $responseText = Invoke-ConsumerTranslationWebRequest `
+                -Method Post `
+                -Uri $translateUri `
+                -Headers $headers `
+                -Body @{
+                    fromLang = 'auto-detect'
+                    to       = 'zh-Hans'
+                    text     = $sourceText
+                    token    = [string] $bootstrap.Token
+                    key      = [string] $bootstrap.Key
+                } `
+                -WebSession $webSession `
+                -SourceName 'Bing Translator no-key fallback' `
+                -SensitiveValues @([string] $bootstrap.Token, [string] $bootstrap.Key) `
+                -MinimumIntervalMilliseconds 750 `
+                -ThrottleKey 'bing-translator-no-key'
+            $uniqueTranslations.Add([pscustomobject]@{
+                Id   = [string](Get-ObjectProperty -Object $item -Name 'Id')
+                Text = ConvertFrom-BingTranslatorResponse -ResponseText $responseText
+            })
+        }
+        return Expand-LyricsTranslations -AllItems $Items -UniqueItems $uniqueItems -UniqueTranslations @($uniqueTranslations)
+    }
+    catch {
+        $script:BingTranslatorSessionState = $null
+        if ($_.Exception.Message -notmatch '(?i:lyrics line exceeded the Bing Translator no-key safety limit)') {
+            Disable-ConsumerTranslationProvider -Provider 'Bing Translator' -Reason 'the undocumented consumer page failed, changed format, or rejected automated traffic'
+        }
+        throw
+    }
 }
 
 function New-AiLyricsTranslationInput {
@@ -3659,6 +4040,24 @@ function Resolve-ChineseLyricsTranslationFallback {
                     $promptHash = 'google-translate-v2'
                     $serviceIdentity = "google-translate-v2|$($Settings.GoogleEndpoint)"
                 }
+                'Microsoft' {
+                    $providerLabel = 'Microsoft Azure Translator'
+                    $model = 'translator-v3'
+                    $promptHash = 'microsoft-translator-v3'
+                    $serviceIdentity = "microsoft-translator-v3|$($Settings.MicrosoftEndpoint)|$($Settings.MicrosoftRegion)"
+                }
+                'GoogleGtx' {
+                    $providerLabel = 'Google Translate GTX no-key fallback'
+                    $model = 'gtx-web-v1'
+                    $promptHash = 'google-gtx-web-v1'
+                    $serviceIdentity = "google-gtx-web-v1|$($Settings.GoogleGtxEndpoint)"
+                }
+                'BingWeb' {
+                    $providerLabel = 'Bing Translator no-key fallback'
+                    $model = 'bing-web-v1'
+                    $promptHash = 'bing-translator-web-v1'
+                    $serviceIdentity = "bing-translator-web-v1|$($Settings.BingTranslatorPage)|$($Settings.BingTranslatorEndpoint)"
+                }
                 'OpenAI' {
                     $providerLabel = 'OpenAI-compatible Chat Completions'
                     $model = [string] $Settings.OpenAiModel
@@ -3701,9 +4100,30 @@ function Resolve-ChineseLyricsTranslationFallback {
                 -PromptHash $promptHash
             $shouldSaveTranslationCache = $false
             if ($null -eq $translations) {
+                $consumerProviderName = switch ($provider) {
+                    'GoogleGtx' { 'Google GTX' }
+                    'BingWeb' { 'Bing Translator' }
+                    default { $null }
+                }
+                if (-not [string]::IsNullOrWhiteSpace($consumerProviderName)) {
+                    $disabledReason = Get-ConsumerTranslationProviderDisabledReason -Provider $consumerProviderName
+                    if (-not [string]::IsNullOrWhiteSpace($disabledReason)) {
+                        $attemptDetails.Add("$provider`: $disabledReason")
+                        continue
+                    }
+                }
                 switch ($provider) {
                     'Google' {
                         $translations = Invoke-GoogleLyricsTranslation -Items @($payload.Items) -Settings $Settings
+                    }
+                    'Microsoft' {
+                        $translations = Invoke-MicrosoftLyricsTranslation -Items @($payload.Items) -Settings $Settings
+                    }
+                    'GoogleGtx' {
+                        $translations = Invoke-GoogleGtxLyricsTranslation -Items @($payload.Items) -Settings $Settings
+                    }
+                    'BingWeb' {
+                        $translations = Invoke-BingWebLyricsTranslation -Items @($payload.Items) -Settings $Settings
                     }
                     'OpenAI' {
                         $translations = Invoke-OpenAiLyricsTranslation -Items @($payload.Items) -Settings $Settings -Title $Title -Artist $Artist -Album $Album
@@ -5636,7 +6056,7 @@ try {
                             "$($lyricsResult.Source) selected with Chinese lyrics or translation"
                         }
                         else {
-                            "$($lyricsResult.Source) selected for AI/Google Chinese translation fallback"
+                            "$($lyricsResult.Source) selected for Chinese machine-translation fallback"
                         }
                     }
                 }
@@ -5792,7 +6212,7 @@ try {
             Write-Host "Lyrics metadata unavailable: $($lyricsStatusCounts.metadata_unavailable)"
         }
         $lyricsJson = [ordered]@{
-            provider_priority = 'Local override; NetEase; QQ Music; LRCLIB; configured OpenAI/Anthropic AI translation; Google Cloud Translation fallback'
+            provider_priority = 'Local override; NetEase; QQ Music; LRCLIB; configured OpenAI/Anthropic AI; Google Cloud; Microsoft Azure; Google GTX no-key; Bing no-key'
             machine_translation_mode = $lyricsTranslationSettings.Mode
             machine_translation_providers = @($lyricsTranslationSettings.Providers)
             tracks   = @($lyricsManifest)

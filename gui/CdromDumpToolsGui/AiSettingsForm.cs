@@ -6,6 +6,9 @@ internal sealed class AiSettingsForm : Form
 {
     private readonly TextBox _googleApiKeyTextBox = NewSecretTextBox();
     private readonly TextBox _googleBaseUrlTextBox = NewTextBox();
+    private readonly TextBox _microsoftApiKeyTextBox = NewSecretTextBox();
+    private readonly TextBox _microsoftBaseUrlTextBox = NewTextBox();
+    private readonly TextBox _microsoftRegionTextBox = NewTextBox();
     private readonly TextBox _openAiApiKeyTextBox = NewSecretTextBox();
     private readonly TextBox _openAiBaseUrlTextBox = NewTextBox();
     private readonly TextBox _openAiModelTextBox = NewTextBox();
@@ -91,7 +94,7 @@ internal sealed class AiSettingsForm : Form
             Dock = DockStyle.Fill,
             AutoSize = true,
             MaximumSize = new Size(740, 0),
-            Text = "在这里直接填写模型、兼容 API 地址和密钥。为某个服务填写 Key、模型或自定义地址后，该服务的 GUI 配置优先；未启用服务仍可由 .env 提供。API Key 不会出现在命令预览或日志中。",
+            Text = "在这里配置正式或兼容 API。为某个服务填写 Key、模型或自定义地址后，该服务的 GUI 配置优先；未启用服务仍可由 .env 提供。Google GTX 与 Bing 免 Key 回退无需在此配置，也不属于正式云 API。API Key 不会出现在命令预览或日志中。",
             ForeColor = SystemColors.ControlText,
             Margin = new Padding(3, 0, 3, 10),
         };
@@ -101,6 +104,7 @@ internal sealed class AiSettingsForm : Form
         tabs.TabPages.Add(BuildOpenAiPage());
         tabs.TabPages.Add(BuildAnthropicPage());
         tabs.TabPages.Add(BuildGooglePage());
+        tabs.TabPages.Add(BuildMicrosoftPage());
         root.Controls.Add(tabs, 0, 1);
 
         var commonGroup = new GroupBox
@@ -193,12 +197,26 @@ internal sealed class AiSettingsForm : Form
 
     private TabPage BuildGooglePage()
     {
-        var page = NewTabPage("Google 翻译");
+        var page = NewTabPage("Google Cloud");
         var table = NewSettingsTable();
         AddSettingsRow(table, 0, "API Key", BuildSecretPanel(_googleApiKeyTextBox));
         AddSettingsRow(table, 1, "Base URL", _googleBaseUrlTextBox);
-        var hint = NewHint("Google Cloud Translation Basic v2。它只在 AI 提供方不可用或翻译失败后参与默认回退。", 10);
+        var hint = NewHint("正式的 Google Cloud Translation Basic v2。默认链中位于 AI 服务之后；它与无需 Key、尽力而为的 Google GTX 回退是两个不同服务。", 10);
         table.Controls.Add(hint, 0, 2);
+        table.SetColumnSpan(hint, 2);
+        page.Controls.Add(table);
+        return page;
+    }
+
+    private TabPage BuildMicrosoftPage()
+    {
+        var page = NewTabPage("Microsoft Azure");
+        var table = NewSettingsTable();
+        AddSettingsRow(table, 0, "API Key", BuildSecretPanel(_microsoftApiKeyTextBox));
+        AddSettingsRow(table, 1, "Base URL", _microsoftBaseUrlTextBox);
+        AddSettingsRow(table, 2, "Region（可选）", _microsoftRegionTextBox);
+        var hint = NewHint("正式的 Azure AI Translator v3。Region 对区域资源通常必填，全局资源可留空。默认链中位于 Google Cloud 之后；免登录 Bing 网页回退无需在此配置，也不属于正式 Azure API。", 10);
+        table.Controls.Add(hint, 0, 3);
         table.SetColumnSpan(hint, 2);
         page.Controls.Add(table);
         return page;
@@ -208,6 +226,9 @@ internal sealed class AiSettingsForm : Form
     {
         _googleApiKeyTextBox.Text = configuration.GoogleApiKey;
         _googleBaseUrlTextBox.Text = configuration.GoogleBaseUrl;
+        _microsoftApiKeyTextBox.Text = configuration.MicrosoftApiKey;
+        _microsoftBaseUrlTextBox.Text = configuration.MicrosoftBaseUrl;
+        _microsoftRegionTextBox.Text = configuration.MicrosoftRegion;
         _openAiApiKeyTextBox.Text = configuration.OpenAiApiKey;
         _openAiBaseUrlTextBox.Text = configuration.OpenAiBaseUrl;
         _openAiModelTextBox.Text = configuration.OpenAiModel;
@@ -226,6 +247,9 @@ internal sealed class AiSettingsForm : Form
     {
         GoogleApiKey = _googleApiKeyTextBox.Text,
         GoogleBaseUrl = _googleBaseUrlTextBox.Text.Trim(),
+        MicrosoftApiKey = _microsoftApiKeyTextBox.Text,
+        MicrosoftBaseUrl = _microsoftBaseUrlTextBox.Text.Trim(),
+        MicrosoftRegion = _microsoftRegionTextBox.Text.Trim(),
         OpenAiApiKey = _openAiApiKeyTextBox.Text,
         OpenAiBaseUrl = _openAiBaseUrlTextBox.Text.Trim(),
         OpenAiModel = _openAiModelTextBox.Text.Trim(),

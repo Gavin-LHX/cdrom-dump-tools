@@ -11,7 +11,7 @@
 - 控制元数据、封面、歌词、网易云音乐和 QQ 音乐查询。
 - 选择网易云/QQ 音乐标签优先级、歌词机器翻译回退顺序和 OpenAI/Anthropic API 格式。
 - 常用转换、歌词/AI 和高级选项分成三个中文页签；界面显示面向用户的说明，不直接暴露 `NetEaseFirst`、`AIThenGoogle` 等内部参数值。
-- 通过主界面的“配置模型与 API Key…”打开独立设置窗口：可填写 OpenAI Chat Completions 兼容接口、Anthropic Messages 兼容接口和 Google Cloud Translation Basic v2 所需字段，也可选用内置 Prompt 或外部 Prompt 文件。
+- 通过主界面的“配置模型与 API Key…”打开独立设置窗口：可填写 OpenAI Chat Completions 兼容接口、Anthropic Messages 兼容接口、Google Cloud Translation Basic v2 和 Microsoft Azure Translator v3 所需字段，也可选用内置 Prompt 或外部 Prompt 文件；Google GTX 与 Bing 网页端无需配置。
 - 设置 MusicBrainz 发行版本序号和 User-Agent 等高级参数。
 - 转换前检查路径与参数，并以参数数组启动 PowerShell，不通过 `cmd.exe` 拼接执行命令。
 - 运行日志与命令预览使用独立页签；日志可复制或清空，命令可一键复制。命令自动换行、只保留纵向滚动条，API Key 不会进入预览内容。
@@ -58,13 +58,14 @@ cdrom-dump-tools-版本-windows-x64.exe
 
 ## `.env` 与 API Key 安全
 
-在线元数据和平台已有歌词不需要 AI Key。只有在网易云音乐、QQ 音乐和 LRCLIB 都没有中文歌词，并启用 AI/Google 翻译回退时，才需要相应配置。
+在线元数据和平台已有歌词不需要 AI Key。网易云音乐、QQ 音乐和 LRCLIB 都没有中文歌词时，默认顺序为 OpenAI → Anthropic → Google Cloud → Microsoft Azure → Google GTX → Bing。前四项只在配置完整时使用；后两项无需账号或 Key，但属于可能限流、验证码或变更的非官方尽力回退。选择“仅 AI”或“关闭机器翻译”可避免调用免 Key 网页端。
 
 日常使用可直接点击主界面的“配置模型与 API Key…”：
 
 - **OpenAI / 兼容接口**：API Key、Base URL、模型，以及可选 Organization ID、Project ID；请求使用 Chat Completions 兼容格式，脚本会在 Base URL 后补 `/chat/completions`。
 - **Anthropic / 兼容接口**：API Key、Base URL、模型、API Version 和 Max Tokens；请求使用 Messages 兼容格式，脚本会在 Base URL 后补 `/messages`。
-- **Google 翻译**：Google Cloud Translation Basic v2 的 API Key 和 Base URL。
+- **Google Cloud**：Google Cloud Translation Basic v2 的 API Key 和 Base URL。
+- **Microsoft Azure**：Azure AI Translator v3 的 API Key、Base URL 和可选 Region；区域或多服务资源通常要求 Region。
 - **Prompt**：留空使用内置“信、达、雅”歌词翻译 Prompt；也可选择本地 UTF-8 Prompt 文件覆盖它。这里只保存文件路径，文件内容不会嵌入 EXE。
 
 为某个服务填写 Key、模型或自定义地址后，该服务的 GUI 配置会通过**子 PowerShell 进程的环境变量**传入，并覆盖 `.env` 中的同名值；未启用服务在界面中显示的默认地址不会遮蔽 `.env`。API Key 不会成为命令行参数，也不会出现在命令预览或转换日志中。PowerShell 把配置解析到自身设置对象后会立即清除相关进程环境变量，再启动 FFmpeg 等子进程，避免把 Key 继续传给无关工具。
@@ -73,7 +74,7 @@ cdrom-dump-tools-版本-windows-x64.exe
 
 - 勾选时，Key 使用 Windows **当前用户** DPAPI 加密，只有密文会写入 `%LOCALAPPDATA%\CdromDumpToolsGui\settings.json`；换到其他 Windows 用户时通常无法解密，GUI 会把不可读的 Key 留空并提示。
 - 取消勾选时，Key 不写入设置文件，只在本次 GUI 会话内存中保留；开始转换时仍只通过子 PowerShell 的临时进程环境传递。
-- Base URL、模型、Organization/Project ID、API Version、Max Tokens、Prompt 文件路径等非密钥设置会按普通配置保存。
+- Base URL、模型、Region、Organization/Project ID、API Version、Max Tokens、Prompt 文件路径等非密钥设置会按普通配置保存。
 - 无论是否记住，Key 都不会写入参数、预览、日志、EXE、Git 仓库或 GitHub Release。
 
 `.env` 仍保留为命令行和高级回退方式。从仓库的 `.env.example`，或 Release 随附的版本化 `.env.example` 资产创建本地配置：
@@ -88,7 +89,7 @@ notepad .env
 - 真实 `.env` 已被 Git 忽略，CI 和发布流程还会检查它没有被跟踪或打包。
 - `.env.example` 只能保留空白占位符，禁止填写真实 Key。
 - 不要把 `.env` 放进发布目录、截图、日志或问题报告；泄漏后应立即在服务商后台撤销并轮换 Key。
-- 自定义 OpenAI/Anthropic 兼容端点必须使用 HTTPS；只有 `localhost`/loopback 本机服务允许 HTTP。具体变量、服务调用内容和缓存规则见仓库根目录 `README.md`。
+- 自定义 OpenAI/Anthropic/Google/Microsoft 端点必须使用 HTTPS；只有 `localhost`/loopback 本机服务允许 HTTP。Bing 的网页临时令牌仅保留在转换进程内存中，不写入设置、缓存或日志。具体变量、服务调用内容和缓存规则见仓库根目录 `README.md`。
 
 ## 构建
 

@@ -32,6 +32,9 @@ internal sealed class StoredAiSettings
     public bool RememberApiKeys { get; set; } = true;
     public string ProtectedGoogleApiKey { get; set; } = string.Empty;
     public string GoogleBaseUrl { get; set; } = AiTranslationConfiguration.DefaultGoogleBaseUrl;
+    public string ProtectedMicrosoftApiKey { get; set; } = string.Empty;
+    public string MicrosoftBaseUrl { get; set; } = AiTranslationConfiguration.DefaultMicrosoftBaseUrl;
+    public string MicrosoftRegion { get; set; } = string.Empty;
     public string ProtectedOpenAiApiKey { get; set; } = string.Empty;
     public string OpenAiBaseUrl { get; set; } = AiTranslationConfiguration.DefaultOpenAiBaseUrl;
     public string OpenAiModel { get; set; } = string.Empty;
@@ -57,6 +60,10 @@ internal static class AiSettingsPersistence
             stored.ProtectedGoogleApiKey,
             ref hadUnreadableSecret,
             () => stored.ProtectedGoogleApiKey = string.Empty);
+        var microsoftKey = Unprotect(
+            stored.ProtectedMicrosoftApiKey,
+            ref hadUnreadableSecret,
+            () => stored.ProtectedMicrosoftApiKey = string.Empty);
         var openAiKey = Unprotect(
             stored.ProtectedOpenAiApiKey,
             ref hadUnreadableSecret,
@@ -69,6 +76,9 @@ internal static class AiSettingsPersistence
         {
             GoogleApiKey = googleKey,
             GoogleBaseUrl = DefaultIfBlank(stored.GoogleBaseUrl, AiTranslationConfiguration.DefaultGoogleBaseUrl),
+            MicrosoftApiKey = microsoftKey,
+            MicrosoftBaseUrl = DefaultIfBlank(stored.MicrosoftBaseUrl, AiTranslationConfiguration.DefaultMicrosoftBaseUrl),
+            MicrosoftRegion = stored.MicrosoftRegion ?? string.Empty,
             OpenAiApiKey = openAiKey,
             OpenAiBaseUrl = DefaultIfBlank(stored.OpenAiBaseUrl, AiTranslationConfiguration.DefaultOpenAiBaseUrl),
             OpenAiModel = stored.OpenAiModel ?? string.Empty,
@@ -94,6 +104,9 @@ internal static class AiSettingsPersistence
             RememberApiKeys = rememberApiKeys,
             ProtectedGoogleApiKey = rememberApiKeys ? SecretProtector.Protect(configuration.GoogleApiKey) : string.Empty,
             GoogleBaseUrl = configuration.GoogleBaseUrl.Trim(),
+            ProtectedMicrosoftApiKey = rememberApiKeys ? SecretProtector.Protect(configuration.MicrosoftApiKey) : string.Empty,
+            MicrosoftBaseUrl = configuration.MicrosoftBaseUrl.Trim(),
+            MicrosoftRegion = configuration.MicrosoftRegion.Trim(),
             ProtectedOpenAiApiKey = rememberApiKeys ? SecretProtector.Protect(configuration.OpenAiApiKey) : string.Empty,
             OpenAiBaseUrl = configuration.OpenAiBaseUrl.Trim(),
             OpenAiModel = configuration.OpenAiModel.Trim(),

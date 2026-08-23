@@ -5,6 +5,7 @@ namespace CdromDumpToolsGui.Core;
 public sealed class AiTranslationConfiguration
 {
     public const string DefaultGoogleBaseUrl = "https://translation.googleapis.com/language/translate/v2";
+    public const string DefaultMicrosoftBaseUrl = "https://api.cognitive.microsofttranslator.com";
     public const string DefaultOpenAiBaseUrl = "https://api.openai.com/v1";
     public const string DefaultAnthropicBaseUrl = "https://api.anthropic.com/v1";
     public const string DefaultAnthropicVersion = "2023-06-01";
@@ -12,6 +13,9 @@ public sealed class AiTranslationConfiguration
 
     public string GoogleApiKey { get; set; } = string.Empty;
     public string GoogleBaseUrl { get; set; } = DefaultGoogleBaseUrl;
+    public string MicrosoftApiKey { get; set; } = string.Empty;
+    public string MicrosoftBaseUrl { get; set; } = DefaultMicrosoftBaseUrl;
+    public string MicrosoftRegion { get; set; } = string.Empty;
     public string OpenAiApiKey { get; set; } = string.Empty;
     public string OpenAiBaseUrl { get; set; } = DefaultOpenAiBaseUrl;
     public string OpenAiModel { get; set; } = string.Empty;
@@ -28,6 +32,9 @@ public sealed class AiTranslationConfiguration
     {
         GoogleApiKey = GoogleApiKey,
         GoogleBaseUrl = GoogleBaseUrl,
+        MicrosoftApiKey = MicrosoftApiKey,
+        MicrosoftBaseUrl = MicrosoftBaseUrl,
+        MicrosoftRegion = MicrosoftRegion,
         OpenAiApiKey = OpenAiApiKey,
         OpenAiBaseUrl = OpenAiBaseUrl,
         OpenAiModel = OpenAiModel,
@@ -48,6 +55,9 @@ public static class AiTranslationEnvironment
     {
         "GOOGLE_TRANSLATE_API_KEY",
         "GOOGLE_TRANSLATE_BASE_URL",
+        "MICROSOFT_TRANSLATOR_API_KEY",
+        "MICROSOFT_TRANSLATOR_BASE_URL",
+        "MICROSOFT_TRANSLATOR_REGION",
         "OPENAI_API_KEY",
         "OPENAI_BASE_URL",
         "OPENAI_MODEL",
@@ -73,6 +83,16 @@ public static class AiTranslationEnvironment
         {
             Add(values, "GOOGLE_TRANSLATE_API_KEY", configuration.GoogleApiKey);
             Add(values, "GOOGLE_TRANSLATE_BASE_URL", configuration.GoogleBaseUrl);
+        }
+
+        var microsoftIsConfigured = HasText(configuration.MicrosoftApiKey)
+            || HasText(configuration.MicrosoftRegion)
+            || !IsDefaultUrl(configuration.MicrosoftBaseUrl, AiTranslationConfiguration.DefaultMicrosoftBaseUrl);
+        if (microsoftIsConfigured)
+        {
+            Add(values, "MICROSOFT_TRANSLATOR_API_KEY", configuration.MicrosoftApiKey);
+            Add(values, "MICROSOFT_TRANSLATOR_BASE_URL", configuration.MicrosoftBaseUrl);
+            Add(values, "MICROSOFT_TRANSLATOR_REGION", configuration.MicrosoftRegion);
         }
 
         var openAiIsConfigured = HasText(configuration.OpenAiApiKey)
@@ -133,7 +153,11 @@ public static class AiTranslationEnvironment
         }
         if (HasText(configuration.GoogleApiKey))
         {
-            providers.Add("Google Translate");
+            providers.Add("Google Cloud Translation");
+        }
+        if (HasText(configuration.MicrosoftApiKey))
+        {
+            providers.Add("Microsoft Translator (Azure)");
         }
         return providers.Count == 0
             ? "GUI 中未填写完整服务；如有 .env，将继续使用其中的配置"
@@ -144,8 +168,20 @@ public static class AiTranslationEnvironment
     {
         ArgumentNullException.ThrowIfNull(configuration);
         ValidateOptionalServiceUrl(configuration.GoogleBaseUrl, "Google Base URL");
+        ValidateOptionalServiceUrl(configuration.MicrosoftBaseUrl, "Microsoft Base URL");
         ValidateOptionalServiceUrl(configuration.OpenAiBaseUrl, "OpenAI Base URL");
         ValidateOptionalServiceUrl(configuration.AnthropicBaseUrl, "Anthropic Base URL");
+        var microsoftRegion = configuration.MicrosoftRegion?.Trim() ?? string.Empty;
+        if (microsoftRegion.Length > 64
+            || microsoftRegion.Any(character => !((character is >= 'a' and <= 'z')
+                                                    || (character is >= 'A' and <= 'Z')
+                                                    || (character is >= '0' and <= '9')
+                                                    || character == '-')))
+        {
+            throw new ArgumentException(
+                "Microsoft Region 只能包含字母、数字和连字符，且不能超过 64 个字符。",
+                nameof(configuration.MicrosoftRegion));
+        }
         if (configuration.AnthropicMaxTokens is < 256 or > 32768)
         {
             throw new ArgumentOutOfRangeException(

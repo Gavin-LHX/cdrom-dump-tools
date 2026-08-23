@@ -103,6 +103,7 @@ static void CheckAiEnvironmentMapping()
     const string openAiKey = "sk-test-secret-never-log";
     const string anthropicKey = "ant-test-secret-never-log";
     const string googleKey = "google-test-secret-never-log";
+    const string microsoftKey = "microsoft-test-secret-never-log";
     var configuration = new AiTranslationConfiguration
     {
         OpenAiApiKey = openAiKey,
@@ -116,6 +117,9 @@ static void CheckAiEnvironmentMapping()
         AnthropicVersion = "2023-06-01",
         AnthropicMaxTokens = 8192,
         GoogleApiKey = googleKey,
+        MicrosoftApiKey = microsoftKey,
+        MicrosoftBaseUrl = "https://translator.example.test",
+        MicrosoftRegion = "eastus2",
         PromptFile = string.Empty,
     };
 
@@ -125,6 +129,12 @@ static void CheckAiEnvironmentMapping()
     Equal(anthropicKey, environment["ANTHROPIC_API_KEY"], "Anthropic key mapping differs");
     Equal("8192", environment["ANTHROPIC_MAX_TOKENS"], "Anthropic token mapping differs");
     Equal(googleKey, environment["GOOGLE_TRANSLATE_API_KEY"], "Google key mapping differs");
+    Equal(microsoftKey, environment["MICROSOFT_TRANSLATOR_API_KEY"], "Microsoft key mapping differs");
+    Equal("https://translator.example.test", environment["MICROSOFT_TRANSLATOR_BASE_URL"], "Microsoft URL mapping differs");
+    Equal("eastus2", environment["MICROSOFT_TRANSLATOR_REGION"], "Microsoft region mapping differs");
+    var summary = AiTranslationEnvironment.CreateSafeSummary(configuration);
+    True(summary.Contains("Microsoft Translator (Azure)", StringComparison.Ordinal),
+        "safe summary omitted configured Microsoft Translator");
 
     var startInfo = ConverterCommand.CreateStartInfo(
         @"C:\Program Files\PowerShell\7\pwsh.exe",
@@ -133,11 +143,13 @@ static void CheckAiEnvironmentMapping()
         configuration);
     Equal(openAiKey, startInfo.Environment["OPENAI_API_KEY"], "OpenAI key was not injected into the child environment");
     Equal(anthropicKey, startInfo.Environment["ANTHROPIC_API_KEY"], "Anthropic key was not injected into the child environment");
+    Equal(microsoftKey, startInfo.Environment["MICROSOFT_TRANSLATOR_API_KEY"], "Microsoft key was not injected into the child environment");
     var preview = ConverterCommand.CreateSafePreview(startInfo.FileName, startInfo.ArgumentList.ToArray());
-    foreach (var secret in new[] { openAiKey, anthropicKey, googleKey })
+    foreach (var secret in new[] { openAiKey, anthropicKey, googleKey, microsoftKey })
     {
         True(!startInfo.ArgumentList.Contains(secret), "an API key leaked into ArgumentList");
         True(!preview.Contains(secret, StringComparison.Ordinal), "an API key leaked into the command preview");
+        True(!summary.Contains(secret, StringComparison.Ordinal), "an API key leaked into the safe summary");
     }
 
     Equal(0, AiTranslationEnvironment.Build(new AiTranslationConfiguration()).Count,
@@ -173,6 +185,11 @@ static void CheckAiServiceUrlValidation()
         AiTranslationEnvironment.ValidateOptionalServiceUrl("https://api.example.test/v1?key=secret", "test"));
     ExpectArgumentException(() =>
         AiTranslationEnvironment.ValidateOptionalServiceUrl("https://user:pass@api.example.test/v1", "test"));
+    AiTranslationEnvironment.Validate(new AiTranslationConfiguration { MicrosoftRegion = "eastus2" });
+    ExpectArgumentException(() =>
+        AiTranslationEnvironment.Validate(new AiTranslationConfiguration { MicrosoftRegion = "east us" }));
+    ExpectArgumentException(() =>
+        AiTranslationEnvironment.Validate(new AiTranslationConfiguration { MicrosoftRegion = "东亚" }));
 }
 
 static void CheckProtectedAiSettings()
@@ -193,6 +210,8 @@ static void CheckProtectedAiSettings()
     {
         OpenAiApiKey = key,
         OpenAiModel = "gpt-test",
+        MicrosoftApiKey = "microsoft-" + key,
+        MicrosoftRegion = "eastus2",
     };
     var stored = AiSettingsPersistence.Save(configuration, rememberApiKeys: true);
     var json = System.Text.Json.JsonSerializer.Serialize(stored);
@@ -200,6 +219,8 @@ static void CheckProtectedAiSettings()
     var loaded = AiSettingsPersistence.Load(stored, out var hadUnreadableSecret);
     True(!hadUnreadableSecret, "valid DPAPI ciphertext was reported unreadable");
     Equal(key, loaded.OpenAiApiKey, "saved OpenAI key did not roundtrip");
+    Equal("microsoft-" + key, loaded.MicrosoftApiKey, "saved Microsoft key did not roundtrip");
+    Equal("eastus2", loaded.MicrosoftRegion, "saved Microsoft region did not roundtrip");
 
     stored.ProtectedOpenAiApiKey += "broken";
     var unreadable = AiSettingsPersistence.Load(stored, out hadUnreadableSecret);
@@ -209,6 +230,7 @@ static void CheckProtectedAiSettings()
 
     var sessionOnly = AiSettingsPersistence.Save(configuration, rememberApiKeys: false);
     Equal(string.Empty, sessionOnly.ProtectedOpenAiApiKey, "session-only key was persisted");
+    Equal(string.Empty, sessionOnly.ProtectedMicrosoftApiKey, "session-only Microsoft key was persisted");
 }
 
 static void CheckEmbeddedScriptEnvironmentCleanupContract()
