@@ -22,6 +22,8 @@ param(
 
     [switch] $NoQQMusic,
 
+    [switch] $VerifyAudio,
+
     [switch] $NoPause,
 
     [ValidateSet('Auto', 'None', 'Google', 'AI', 'GoogleThenAI', 'AIThenGoogle')]
@@ -141,6 +143,119 @@ function Get-TranslationConfigurationValue {
         return ([string] $DotEnvValues[$Name]).Trim()
     }
     return $DefaultValue
+}
+
+function Get-FileSegmentSha256 {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Path,
+
+        [Parameter(Mandatory = $true)]
+        [int64] $Offset,
+
+        [Parameter(Mandatory = $true)]
+        [int64] $Length
+    )
+
+    if ($Offset -lt 0) {
+        throw 'The segment offset must not be negative.'
+    }
+    if ($Length -le 0) {
+        throw 'The segment length must be positive.'
+    }
+
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+        throw "The file to hash was not found: $fullPath"
+    }
+
+    $stream = $null
+    $sha256 = $null
+    try {
+        $stream = [IO.File]::Open(
+            $fullPath,
+            [IO.FileMode]::Open,
+            [IO.FileAccess]::Read,
+            [IO.FileShare]::Read
+        )
+        if ($Offset -gt $stream.Length -or $Length -gt ($stream.Length - $Offset)) {
+            throw "The requested segment is outside the file: offset=$Offset, length=$Length, fileLength=$($stream.Length)."
+        }
+
+        [void] $stream.Seek($Offset, [IO.SeekOrigin]::Begin)
+        $sha256 = [Security.Cryptography.SHA256]::Create()
+        $buffer = [byte[]]::new(1MB)
+        [int64] $remaining = $Length
+        while ($remaining -gt 0) {
+            $requested = [int] [Math]::Min([int64] $buffer.Length, $remaining)
+            $read = $stream.Read($buffer, 0, $requested)
+            if ($read -le 0) {
+                throw 'Unexpected end of file while hashing the requested segment.'
+            }
+            [void] $sha256.TransformBlock($buffer, 0, $read, $buffer, 0)
+            $remaining -= $read
+        }
+        [void] $sha256.TransformFinalBlock([byte[]]::new(0), 0, 0)
+        return ([BitConverter]::ToString($sha256.Hash)).Replace('-', '').ToLowerInvariant()
+    }
+    finally {
+        if ($null -ne $sha256) {
+            $sha256.Dispose()
+        }
+        if ($null -ne $stream) {
+            $stream.Dispose()
+        }
+    }
+}
+
+function ConvertFrom-FfmpegHashOutput {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]] $Output
+    )
+
+    $hashValues = [System.Collections.Generic.List[string]]::new()
+    foreach ($outputLine in @($Output)) {
+        $lineText = ([string] $outputLine).Trim()
+        if ($lineText -match '^SHA256=(?<hash>[0-9A-Fa-f]{64})$') {
+            $hashValues.Add($Matches['hash'].ToLowerInvariant())
+        }
+    }
+
+    if ($hashValues.Count -ne 1) {
+        throw "FFmpeg returned $($hashValues.Count) valid SHA-256 hash lines; exactly one was expected."
+    }
+    return $hashValues[0]
+}
+
+function Get-FfmpegDecodedPcmSha256 {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $FfmpegPath,
+
+        [Parameter(Mandatory = $true)]
+        [string] $AudioPath
+    )
+
+    $ffmpegHashArguments = @(
+        '-hide_banner',
+        '-loglevel', 'error',
+        '-nostdin',
+        '-i', $AudioPath,
+        '-map', '0:a:0',
+        '-ar', '44100',
+        '-ac', '2',
+        '-c:a', 'pcm_s16be',
+        '-f', 'hash',
+        '-hash', 'sha256',
+        '-'
+    )
+    $hashOutput = @(& $FfmpegPath @ffmpegHashArguments 2>&1)
+    $hashExitCode = $LASTEXITCODE
+    if ($hashExitCode -ne 0) {
+        throw "FFmpeg could not decode the converted audio for verification (exit code $hashExitCode)."
+    }
+    return ConvertFrom-FfmpegHashOutput -Output $hashOutput
 }
 
 function Clear-TranslationProcessEnvironment {
@@ -6513,6 +6628,7 @@ try {
     $createdFiles = [System.Collections.Generic.List[string]]::new()
     $createdLyricsFiles = [System.Collections.Generic.List[string]]::new()
     $createdSubtitleFiles = [System.Collections.Generic.List[string]]::new()
+    $verificationRecords = [System.Collections.Generic.List[object]]::new()
     $subtitlesDirectory = Join-Path $workDirectory 'Subtitles'
 
     foreach ($track in $tracks) {
@@ -6641,6 +6757,32 @@ try {
         if ($LASTEXITCODE -ne 0) {
             throw "FFmpeg failed while converting track $($track.Number)."
         }
+        if (-not (Test-Path -LiteralPath $outputPath -PathType Leaf) -or (Get-Item -LiteralPath $outputPath).Length -le 0) {
+            throw "FFmpeg did not create a non-empty output for track $($track.Number)."
+        }
+
+        if ($VerifyAudio) {
+            Write-Host ("Verifying track {0}/{1} -> {2}" -f $track.Number, $tracks.Count, $outputFileName)
+            $sourceSegmentHash = Get-FileSegmentSha256 `
+                -Path $BinPath `
+                -Offset ([int64] $track.OffsetBytes) `
+                -Length ([int64] $track.LengthBytes)
+            $decodedOutputHash = Get-FfmpegDecodedPcmSha256 -FfmpegPath $FfmpegPath -AudioPath $outputPath
+            if (-not [string]::Equals($sourceSegmentHash, $decodedOutputHash, [StringComparison]::OrdinalIgnoreCase)) {
+                throw ("Lossless PCM verification failed for track {0}: source={1}, decoded={2}." -f `
+                    $track.Number, $sourceSegmentHash, $decodedOutputHash)
+            }
+
+            $verificationRecords.Add([pscustomobject] [ordered]@{
+                track_number                 = [int] $track.Number
+                file                         = $outputFileName
+                sample_count                 = [int64] $sampleCount
+                source_segment_sha256        = $sourceSegmentHash
+                decoded_output_pcm_sha256    = $decodedOutputHash
+                match                        = $true
+            })
+            Write-Host ("Verified track {0}/{1}: lossless PCM SHA-256 match" -f $track.Number, $tracks.Count)
+        }
 
         $createdFiles.Add($outputPath)
     }
@@ -6648,12 +6790,57 @@ try {
     $playlistLines = @('#EXTM3U') + ($createdFiles | ForEach-Object { [IO.Path]::GetFileName($_) })
     [IO.File]::WriteAllLines((Join-Path $workDirectory 'tracks.m3u8'), $playlistLines, [Text.UTF8Encoding]::new($false))
 
-    $checksumLines = foreach ($file in @($createdFiles) + @($createdLyricsFiles) + @($createdSubtitleFiles)) {
-        $hash = Get-FileHash -LiteralPath $file -Algorithm SHA256
-        $relativeName = $file.Substring($workDirectory.Length).TrimStart([char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)).Replace('\', '/')
-        '{0} *{1}' -f $hash.Hash.ToLowerInvariant(), $relativeName
+    if ($VerifyAudio) {
+        $verificationCreatedUtc = [DateTimeOffset]::UtcNow.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+        $verificationSummary = [ordered]@{
+            schema      = 'cdrom-audio-verification-v1'
+            created_utc = $verificationCreatedUtc
+            format      = $Format
+            method      = 'Source BIN segment SHA-256 compared with converted audio decoded as s16be/44100Hz/stereo PCM'
+            status      = 'passed'
+            track_count = $verificationRecords.Count
+            tracks      = @($verificationRecords)
+        }
+        $verificationJson = $verificationSummary | ConvertTo-Json -Depth 6
+        [IO.File]::WriteAllText(
+            (Join-Path $workDirectory 'audio-verification.json'),
+            $verificationJson,
+            [Text.UTF8Encoding]::new($false)
+        )
+
+        $verificationTextLines = [System.Collections.Generic.List[string]]::new()
+        $verificationTextLines.Add('Audio verification: PASSED')
+        $verificationTextLines.Add("Created UTC: $verificationCreatedUtc")
+        $verificationTextLines.Add('Method: source BIN segment SHA-256 compared with converted audio decoded as s16be/44100Hz/stereo PCM')
+        $verificationTextLines.Add("Tracks verified: $($verificationRecords.Count)")
+        $verificationTextLines.Add('')
+        foreach ($record in $verificationRecords) {
+            $verificationTextLines.Add(("Track {0:D2}: {1}" -f $record.track_number, $record.file))
+            $verificationTextLines.Add("  Samples: $($record.sample_count)")
+            $verificationTextLines.Add("  Source:  $($record.source_segment_sha256)")
+            $verificationTextLines.Add("  Decoded: $($record.decoded_output_pcm_sha256)")
+            $verificationTextLines.Add('  Result:  MATCH')
+        }
+        [IO.File]::WriteAllLines(
+            (Join-Path $workDirectory 'audio-verification.txt'),
+            $verificationTextLines,
+            [Text.UTF8Encoding]::new($false)
+        )
     }
-    [IO.File]::WriteAllLines((Join-Path $workDirectory 'SHA256SUMS.txt'), $checksumLines, [Text.UTF8Encoding]::new($false))
+
+    $checksumPath = Join-Path $workDirectory 'SHA256SUMS.txt'
+    $checksumFiles = @(Get-ChildItem -LiteralPath $workDirectory -File -Recurse | ForEach-Object {
+        $relativeName = $_.FullName.Substring($workDirectory.Length).TrimStart([char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)).Replace('\', '/')
+        [pscustomobject]@{
+            FullName     = $_.FullName
+            RelativeName = $relativeName
+        }
+    } | Where-Object { -not [string]::Equals($_.FullName, $checksumPath, [StringComparison]::OrdinalIgnoreCase) } | Sort-Object -Property RelativeName)
+    $checksumLines = foreach ($file in $checksumFiles) {
+        $hash = Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256
+        '{0} *{1}' -f $hash.Hash.ToLowerInvariant(), $file.RelativeName
+    }
+    [IO.File]::WriteAllLines($checksumPath, $checksumLines, [Text.UTF8Encoding]::new($false))
 
     Move-Item -LiteralPath $workDirectory -Destination $OutputDirectory
     $workDirectory = $null

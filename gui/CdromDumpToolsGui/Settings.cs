@@ -18,6 +18,7 @@ internal sealed class AppSettings
     public bool NoNetEase { get; set; }
     public bool NoQQMusic { get; set; }
     public bool NoPause { get; set; } = true;
+    public bool VerifyAudio { get; set; } = true;
     public string LyricsTranslationFallback { get; set; } = "Auto";
     public string AiTranslationProvider { get; set; } = "Auto";
     public string DomesticSourcePriority { get; set; } = "NetEaseFirst";

@@ -19,7 +19,7 @@ public static class ConverterCommand
     };
     private static readonly HashSet<string> ScriptSwitchNames = new(StringComparer.Ordinal)
     {
-        "-NoMetadata", "-NoCover", "-NoLyrics", "-NoNetEase", "-NoQQMusic", "-NoPause",
+        "-NoMetadata", "-NoCover", "-NoLyrics", "-NoNetEase", "-NoQQMusic", "-NoPause", "-VerifyAudio",
     };
     private static readonly HashSet<string> ScriptValueNames = new(StringComparer.Ordinal)
     {
@@ -113,6 +113,7 @@ public static class ConverterCommand
         AddSwitch(arguments, "-NoNetEase", options.NoNetEase);
         AddSwitch(arguments, "-NoQQMusic", options.NoQQMusic);
         AddSwitch(arguments, "-NoPause", options.NoPause);
+        AddSwitch(arguments, "-VerifyAudio", options.VerifyAudio);
 
         arguments.Add("-LyricsTranslationFallback");
         arguments.Add(options.LyricsTranslationFallback);

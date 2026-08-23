@@ -190,11 +190,12 @@ jobs:
               throw ($messages -join [Environment]::NewLine)
           }
 
-      - name: Run lyrics translation offline tests with PowerShell 7
+      - name: Run PowerShell 7 offline tests
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           & '.\tests\lyrics_translation_fallback.Tests.ps1'
+          & '.\tests\audio_verification.Tests.ps1'
 
       - name: Parse and smoke test with Windows PowerShell 5.1
         shell: powershell
@@ -227,23 +228,33 @@ jobs:
           @echo off
           setlocal EnableExtensions DisableDelayedExpansion
           set "output="
+          set "hash_mode="
           :next
           if "%~1"=="" goto done
+          if /I "%~1"=="hash" set "hash_mode=1"
           set "output=%~1"
           shift
           goto next
           :done
           if not defined output exit /b 1
           if defined OPENAI_API_KEY exit /b 97
-          type nul > "%output%"
+          if defined hash_mode goto hash
+          > "%output%" echo fake-audio
+          exit /b 0
+          :hash
+          if not defined CDROM_FAKE_PCM_HASH exit /b 96
+          echo SHA256=%CDROM_FAKE_PCM_HASH%
           exit /b 0
           '@
           $fakeFfmpegPath = Join-Path $fixture 'ffmpeg.cmd'
           [IO.File]::WriteAllText($fakeFfmpegPath, $fakeFfmpeg, [Text.Encoding]::ASCII)
 
           $previousOpenAiKey = [Environment]::GetEnvironmentVariable('OPENAI_API_KEY', [EnvironmentVariableTarget]::Process)
+          $previousFakePcmHash = [Environment]::GetEnvironmentVariable('CDROM_FAKE_PCM_HASH', [EnvironmentVariableTarget]::Process)
           try {
             [Environment]::SetEnvironmentVariable('OPENAI_API_KEY', 'ci-secret-must-not-reach-ffmpeg', [EnvironmentVariableTarget]::Process)
+            $expectedPcmHash = (Get-FileHash -LiteralPath (Join-Path $fixture 'test-disc.bin') -Algorithm SHA256).Hash.ToLowerInvariant()
+            [Environment]::SetEnvironmentVariable('CDROM_FAKE_PCM_HASH', $expectedPcmHash, [EnvironmentVariableTarget]::Process)
             & $scriptPath `
               -BinPath (Join-Path $fixture 'test-disc.bin') `
               -TocPath (Join-Path $fixture 'test-disc.toc') `
@@ -252,16 +263,120 @@ jobs:
               -NoMetadata `
               -NoCover `
               -NoLyrics `
+              -VerifyAudio `
               -NoPause
           }
           finally {
             [Environment]::SetEnvironmentVariable('OPENAI_API_KEY', $previousOpenAiKey, [EnvironmentVariableTarget]::Process)
+            [Environment]::SetEnvironmentVariable('CDROM_FAKE_PCM_HASH', $previousFakePcmHash, [EnvironmentVariableTarget]::Process)
           }
           if (-not (Test-Path -LiteralPath (Join-Path $output 'track-01.flac'))) {
               throw 'Windows PowerShell smoke test did not create the expected output track.'
           }
 
+          $verificationJsonPath = Join-Path $output 'audio-verification.json'
+          $verificationTextPath = Join-Path $output 'audio-verification.txt'
+          if (-not (Test-Path -LiteralPath $verificationJsonPath -PathType Leaf) -or
+              -not (Test-Path -LiteralPath $verificationTextPath -PathType Leaf)) {
+              throw 'Windows PowerShell smoke test did not create both audio verification reports.'
+          }
+          $verification = [IO.File]::ReadAllText($verificationJsonPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+          if ($verification.schema -cne 'cdrom-audio-verification-v1' -or
+              $verification.status -cne 'passed' -or
+              [int] $verification.track_count -ne 1 -or
+              @($verification.tracks).Count -ne 1) {
+              throw 'Audio verification JSON summary has unexpected identity or counts.'
+          }
+          $verifiedTrack = @($verification.tracks)[0]
+          if ($verifiedTrack.file -cne 'track-01.flac' -or
+              [int64] $verifiedTrack.sample_count -ne 88200 -or
+              $verifiedTrack.source_segment_sha256 -cne $expectedPcmHash -or
+              $verifiedTrack.decoded_output_pcm_sha256 -cne $expectedPcmHash -or
+              $verifiedTrack.match -ne $true) {
+              throw 'Audio verification JSON track record does not prove the expected lossless match.'
+          }
+          $verificationText = [IO.File]::ReadAllText($verificationTextPath, [Text.Encoding]::UTF8)
+          if ($verificationText -notmatch '(?m)^Audio verification: PASSED\r?$' -or
+              $verificationText -notmatch '(?m)^Tracks verified: 1\r?$') {
+              throw 'Human-readable audio verification report is incomplete.'
+          }
+
+          $checksumPath = Join-Path $output 'SHA256SUMS.txt'
+          $checksumLines = @([IO.File]::ReadAllLines($checksumPath, [Text.Encoding]::UTF8))
+          $manifest = @{}
+          foreach ($line in $checksumLines) {
+              if ($line -notmatch '^(?<hash>[0-9a-f]{64}) \*(?<name>.+)$') {
+                  throw "Invalid SHA256SUMS line: $line"
+              }
+              $manifest[$Matches['name']] = $Matches['hash']
+          }
+          $expectedFiles = @(Get-ChildItem -LiteralPath $output -File -Recurse | Where-Object {
+              $_.FullName -cne $checksumPath
+          })
+          if ($manifest.Count -ne $expectedFiles.Count) {
+              throw "SHA256SUMS covers $($manifest.Count) of $($expectedFiles.Count) deliverable files."
+          }
+          foreach ($file in $expectedFiles) {
+              $relativeName = $file.FullName.Substring($output.Length).TrimStart([char[]]@('\', '/')).Replace('\', '/')
+              if (-not $manifest.ContainsKey($relativeName)) {
+                  throw "SHA256SUMS omitted deliverable: $relativeName"
+              }
+              $actualHash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              if ($manifest[$relativeName] -cne $actualHash) {
+                  throw "SHA256SUMS hash mismatch for: $relativeName"
+              }
+          }
+
+          $failureOutput = Join-Path $fixture 'verification-failure-output'
+          $failureOutputName = Split-Path -Leaf $failureOutput
+          $wrongPcmHash = '0' * 64
+          if ($wrongPcmHash -ceq $expectedPcmHash) {
+              throw 'The deliberately incorrect verification hash unexpectedly matches the source fixture.'
+          }
+          $previousFakePcmHash = [Environment]::GetEnvironmentVariable('CDROM_FAKE_PCM_HASH', [EnvironmentVariableTarget]::Process)
+          try {
+              [Environment]::SetEnvironmentVariable('CDROM_FAKE_PCM_HASH', $wrongPcmHash, [EnvironmentVariableTarget]::Process)
+              $failureArguments = @(
+                  '-NoLogo',
+                  '-NoProfile',
+                  '-NonInteractive',
+                  '-ExecutionPolicy', 'Bypass',
+                  '-File', $scriptPath,
+                  '-BinPath', (Join-Path $fixture 'test-disc.bin'),
+                  '-TocPath', (Join-Path $fixture 'test-disc.toc'),
+                  '-OutputDirectory', $failureOutput,
+                  '-FfmpegPath', $fakeFfmpegPath,
+                  '-NoMetadata',
+                  '-NoCover',
+                  '-NoLyrics',
+                  '-VerifyAudio',
+                  '-NoPause'
+              )
+              $failureProcess = Start-Process `
+                  -FilePath (Join-Path $PSHOME 'powershell.exe') `
+                  -ArgumentList $failureArguments `
+                  -NoNewWindow `
+                  -Wait `
+                  -PassThru
+          }
+          finally {
+              [Environment]::SetEnvironmentVariable('CDROM_FAKE_PCM_HASH', $previousFakePcmHash, [EnvironmentVariableTarget]::Process)
+          }
+          if ($failureProcess.ExitCode -eq 0) {
+              throw 'Deliberately incorrect decoded-audio hash did not fail conversion.'
+          }
+          if (Test-Path -LiteralPath $failureOutput) {
+              throw 'Verification failure published a final output directory.'
+          }
+          $orphanedFailurePartials = @(Get-ChildItem -LiteralPath $fixture -Directory -Force | Where-Object {
+              $_.Name.StartsWith(".$failureOutputName.partial.", [StringComparison]::OrdinalIgnoreCase)
+          })
+          if ($orphanedFailurePartials.Count -ne 0) {
+              throw "Verification failure left $($orphanedFailurePartials.Count) partial output directorie(s)."
+          }
+
           & '.\tests\lyrics_translation_fallback.Tests.ps1'
+          & '.\tests\audio_verification.Tests.ps1'
 
       - name: Run critical PSScriptAnalyzer rules
         shell: pwsh

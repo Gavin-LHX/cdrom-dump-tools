@@ -49,6 +49,7 @@ internal sealed class MainForm : Form
     private readonly CheckBox _lyricsCheckBox = NewCheckBox("获取歌词并生成字幕", isChecked: true);
     private readonly CheckBox _netEaseCheckBox = NewCheckBox("使用网易云音乐", isChecked: true);
     private readonly CheckBox _qqMusicCheckBox = NewCheckBox("使用 QQ 音乐", isChecked: true);
+    private readonly CheckBox _verifyAudioCheckBox = NewCheckBox("逐轨无损校验（推荐）", isChecked: true);
     private readonly CheckBox _openOnSuccessCheckBox = NewCheckBox("成功后打开目录");
     private readonly Label _aiStatusLabel = new()
     {
@@ -276,11 +277,12 @@ internal sealed class MainForm : Form
         {
             _metadataCheckBox,
             _coverCheckBox,
+            _verifyAudioCheckBox,
             _openOnSuccessCheckBox,
         });
         conversionOptions.Controls.Add(conversionSwitches, 0, 1);
         conversionOptions.SetColumnSpan(conversionSwitches, 4);
-        var conversionHint = NewHintLabel("光盘身份优先使用 MusicBrainz；写入标签时优先使用网易云/QQ，缺失字段再由其他来源补齐。");
+        var conversionHint = NewHintLabel("光盘身份优先使用 MusicBrainz；写入标签时优先使用网易云/QQ，缺失字段再由其他来源补齐。逐轨无损校验会多读取一次音频，用于发现截断或损坏。");
         conversionOptions.Controls.Add(conversionHint, 0, 2);
         conversionOptions.SetColumnSpan(conversionHint, 4);
         conversionPage.Controls.Add(conversionOptions);
@@ -512,7 +514,7 @@ internal sealed class MainForm : Form
         foreach (var checkBox in new[]
                  {
                      _metadataCheckBox, _coverCheckBox, _lyricsCheckBox, _netEaseCheckBox,
-                     _qqMusicCheckBox,
+                     _qqMusicCheckBox, _verifyAudioCheckBox,
                  })
         {
             checkBox.CheckedChanged += (_, _) => QueueCommandPreview();
@@ -524,6 +526,7 @@ internal sealed class MainForm : Form
         _toolTip.SetToolTip(_releaseIndexInput, "0 表示非交互地使用第 1 个候选；1..1000 指定候选序号。");
         _toolTip.SetToolTip(_envTextBox, "高级兼容入口：GUI 只保存路径；日常使用请直接点击“配置模型与 API Key…”。");
         _toolTip.SetToolTip(_aiSettingsButton, "配置 OpenAI、Anthropic、Google Cloud 与 Microsoft Azure 的正式/兼容端点和 API Key；免 Key 回退无需配置。");
+        _toolTip.SetToolTip(_verifyAudioCheckBox, "转换后把输出解码回标准 CD PCM，与 BIN 对应片段做 SHA-256 比较；会增加一次顺序读取。");
     }
 
     private void LoadSettingsIntoControls()
@@ -545,6 +548,7 @@ internal sealed class MainForm : Form
         _lyricsCheckBox.Checked = !_settings.NoLyrics;
         _netEaseCheckBox.Checked = !_settings.NoNetEase;
         _qqMusicCheckBox.Checked = !_settings.NoQQMusic;
+        _verifyAudioCheckBox.Checked = _settings.VerifyAudio;
         _openOnSuccessCheckBox.Checked = _settings.OpenOutputOnSuccess;
         _userAgentTextBox.Text = string.IsNullOrWhiteSpace(_settings.MusicBrainzUserAgent)
             ? ConversionOptions.DefaultMusicBrainzUserAgent
@@ -565,6 +569,7 @@ internal sealed class MainForm : Form
         NoNetEase = !_netEaseCheckBox.Checked,
         NoQQMusic = !_qqMusicCheckBox.Checked,
         NoPause = true,
+        VerifyAudio = _verifyAudioCheckBox.Checked,
         LyricsTranslationFallback = SelectedValue(_lyricsFallbackComboBox, "Auto"),
         AiTranslationProvider = SelectedValue(_aiProviderComboBox, "Auto"),
         DomesticSourcePriority = SelectedValue(_domesticPriorityComboBox, "NetEaseFirst"),
@@ -593,6 +598,7 @@ internal sealed class MainForm : Form
             NoNetEase = settings.NoNetEase,
             NoQQMusic = settings.NoQQMusic,
             NoPause = settings.NoPause,
+            VerifyAudio = settings.VerifyAudio,
             LyricsTranslationFallback = settings.LyricsTranslationFallback,
             AiTranslationProvider = settings.AiTranslationProvider,
             DomesticSourcePriority = settings.DomesticSourcePriority,
@@ -1211,6 +1217,26 @@ internal sealed class MainForm : Form
                 _progressBar.Value = current - 1;
                 _phaseLabel.Text = $"正在转换第 {current}/{total} 轨 · {progressEvent.Detail}";
                 _statusLabel.Text = $"正在转换第 {current}/{total} 轨";
+                break;
+            case ConversionProgressKind.TrackVerificationStarted:
+                var verificationTotal = progressEvent.Total ?? 1;
+                var verificationCurrent = Math.Clamp(progressEvent.Current ?? 1, 1, verificationTotal);
+                _progressBar.Style = ProgressBarStyle.Blocks;
+                _progressBar.MarqueeAnimationSpeed = 0;
+                _progressBar.Maximum = verificationTotal;
+                _progressBar.Value = verificationCurrent - 1;
+                _phaseLabel.Text = $"正在校验第 {verificationCurrent}/{verificationTotal} 轨 · {progressEvent.Detail}";
+                _statusLabel.Text = $"正在校验第 {verificationCurrent}/{verificationTotal} 轨";
+                break;
+            case ConversionProgressKind.TrackVerified:
+                var verifiedTotal = progressEvent.Total ?? 1;
+                var verifiedCurrent = Math.Clamp(progressEvent.Current ?? 1, 1, verifiedTotal);
+                _progressBar.Style = ProgressBarStyle.Blocks;
+                _progressBar.MarqueeAnimationSpeed = 0;
+                _progressBar.Maximum = verifiedTotal;
+                _progressBar.Value = verifiedCurrent;
+                _phaseLabel.Text = $"第 {verifiedCurrent}/{verifiedTotal} 轨无损校验通过";
+                _statusLabel.Text = $"已校验第 {verifiedCurrent}/{verifiedTotal} 轨";
                 break;
         }
     }

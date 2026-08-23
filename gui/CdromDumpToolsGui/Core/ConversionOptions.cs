@@ -16,6 +16,7 @@ public sealed class ConversionOptions
     public bool NoNetEase { get; set; }
     public bool NoQQMusic { get; set; }
     public bool NoPause { get; set; } = true;
+    public bool VerifyAudio { get; set; }
     public string LyricsTranslationFallback { get; set; } = "Auto";
     public string AiTranslationProvider { get; set; } = "Auto";
     public string? EnvPath { get; set; }

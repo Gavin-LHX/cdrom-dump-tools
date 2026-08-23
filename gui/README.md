@@ -8,6 +8,7 @@
 
 - 选择 BIN、TOC、输出位置、FFmpeg 和 `.env` 文件；BIN/TOC 支持拖放。
 - 输出无损 FLAC 或 WAV。
+- “逐轨无损校验（推荐）”默认开启：把每轨 BIN 原始字节段与成品解码后的 CD-DA PCM 做 SHA-256 对比，并在界面中显示校验进度。
 - 控制元数据、封面、歌词、网易云音乐和 QQ 音乐查询。
 - 选择网易云/QQ 音乐标签优先级、歌词机器翻译回退顺序和 OpenAI/Anthropic API 格式。
 - 常用转换、歌词/AI 和高级选项分成三个中文页签；界面显示面向用户的说明，不直接暴露 `NetEaseFirst`、`AIThenGoogle` 等内部参数值。
@@ -42,7 +43,7 @@ cdrom-dump-tools-版本-windows-x64.exe
 
 1. 从 GitHub Release 下载 Windows x64 EXE 并直接运行。
 2. 选择或拖入 `.bin`；同目录同名 `.toc` 存在时可直接使用，也可手动指定。
-3. 在“转换与标签”“歌词与 AI 翻译”页签中选择所需项目；需要机器翻译回退时，可点击“配置模型与 API Key…”直接配置服务。
+3. 在“转换与标签”“歌词与 AI 翻译”页签中选择所需项目；建议保持默认的“逐轨无损校验（推荐）”。需要机器翻译回退时，可点击“配置模型与 API Key…”直接配置服务。
 4. 将“自定义输出目录”留空以自动命名，或指定一个尚不存在的完整目标目录；FFmpeg、`.env`、候选序号和 User-Agent 位于“高级设置”。
 5. 开始转换，在进度区查看当前在线查询阶段、曲目 `X/Y` 和耗时；“运行日志”“命令预览”页签可随时切换。转换成功后可用“打开输出目录”进入实际结果目录。
 
@@ -55,6 +56,18 @@ cdrom-dump-tools-版本-windows-x64.exe
 - GUI 在运行前显示的自动路径只是预测，日志中的 `Destination:` 也只是计划位置。元数据匹配可能改变目录名；最终成功以 `Done. Converted tracks are in:` 和退出码 `0` 为准，随后可用“打开输出目录”进入结果。
 
 转换过程先写入同一父目录下的隐藏 `.partial` 工作目录，全部成功后再移动为最终目录。失败或取消时，日志会说明处理状态；不要把预测目录当作完成标志。
+
+### 逐轨无损校验与完整清单
+
+GUI 默认向转换器传递 `-VerifyAudio`。每首成品写入后，脚本在本地流式计算对应 BIN 字节段的 SHA-256，再让 FFmpeg 把成品解码为 s16be、44.1 kHz、双声道 PCM 并计算第二个 SHA-256。两个值完全一致才算通过；任一轨不一致时任务非零退出，隐藏 `.partial` 工作目录会清理，最终输出目录不会发布。整个过程不会把音频上传到网络。
+
+校验通过后会生成：
+
+- `audio-verification.json`：适合程序读取，记录校验方法、状态以及每轨的文件名、采样数、源哈希、解码哈希和结论。
+- `audio-verification.txt`：适合人工查看的逐轨摘要。
+- `SHA256SUMS.txt`：完整列出最终目录内除清单自身以外的全部交付文件；`Subtitles/` 等子目录使用相对路径。
+
+逐轨校验会增加一次 BIN 段读取和一次成品解码，因此转换总耗时及本地磁盘/CPU 使用量会增加。确有性能需要时可以在 GUI 中取消勾选；此时不会生成两个 `audio-verification.*` 报告，但完整 `SHA256SUMS.txt` 仍会生成。
 
 ## `.env` 与 API Key 安全
 
@@ -134,7 +147,7 @@ gui\publish\win-x64\CdromDumpToolsGui.exe
 dotnet run --project gui\CdromDumpToolsGui.CoreChecks\CdromDumpToolsGui.CoreChecks.csproj -c Release
 ```
 
-GitHub Actions 会在 Windows Server 2025 上使用固定的 .NET 8 SDK 还原并构建 GUI，运行包括嵌入脚本在内的核心检查，并再次发布验证“目录中恰好只有一个 EXE”。版本标签发布前会复用完整 CI、把标签版本注入 EXE，并在 Windows 上实际自检最终字节；Release 直接上传该 EXE、可选的空白 `.env.example`、Linux 脚本包、内嵌 .NET Runtime 对应的 `LICENSE`/`THIRD-PARTY-NOTICES` 和 SHA-256 清单。许可证资产不是运行依赖，真实 `.env` 永远不会上传。
+GitHub Actions 会在 Windows Server 2025 上使用固定的 .NET 8 SDK 还原并构建 GUI，运行包括嵌入脚本在内的核心检查，并再次发布验证“目录中恰好只有一个 EXE”。CI 同时在 PowerShell 7 与 Windows PowerShell 5.1 覆盖音频校验纯函数，并在 Windows smoke test 中验证成功报告、完整清单以及哈希不一致时不发布最终目录。版本标签发布前会复用完整 CI、把标签版本注入 EXE，并在 Windows 上实际自检最终字节；Release 直接上传该 EXE、可选的空白 `.env.example`、Linux 脚本包、内嵌 .NET Runtime 对应的 `LICENSE`/`THIRD-PARTY-NOTICES` 和 SHA-256 清单。许可证资产不是运行依赖，真实 `.env` 永远不会上传。
 
 ## 限制
 

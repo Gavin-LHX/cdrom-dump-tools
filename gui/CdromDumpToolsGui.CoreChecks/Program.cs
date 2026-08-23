@@ -54,6 +54,7 @@ static ConversionOptions FullOptions() => new()
     NoNetEase = true,
     NoQQMusic = true,
     NoPause = true,
+    VerifyAudio = true,
     LyricsTranslationFallback = "AIThenGoogle",
     AiTranslationProvider = "Anthropic",
     EnvPath = @"C:\Secrets\my config.env",
@@ -64,11 +65,14 @@ static ConversionOptions FullOptions() => new()
 
 static void CheckAllConverterParameters()
 {
+    True(new AppSettings().VerifyAudio,
+        "new and legacy settings without an explicit audio-verification field must default to enabled");
+
     var arguments = ConverterCommand.BuildScriptArguments(FullOptions());
     var expectedNames = new HashSet<string>(StringComparer.Ordinal)
     {
         "-BinPath", "-Format", "-TocPath", "-OutputDirectory", "-FfmpegPath",
-        "-NoMetadata", "-NoCover", "-NoLyrics", "-NoNetEase", "-NoQQMusic", "-NoPause",
+        "-NoMetadata", "-NoCover", "-NoLyrics", "-NoNetEase", "-NoQQMusic", "-NoPause", "-VerifyAudio",
         "-LyricsTranslationFallback", "-AiTranslationProvider", "-EnvPath",
         "-DomesticSourcePriority", "-ReleaseIndex", "-MusicBrainzUserAgent",
     };
@@ -80,6 +84,7 @@ static void CheckAllConverterParameters()
     ParameterEquals(arguments, "-AiTranslationProvider", "Anthropic");
     ParameterEquals(arguments, "-DomesticSourcePriority", "QQMusicFirst");
     ParameterEquals(arguments, "-ReleaseIndex", "1000");
+    True(arguments.Contains("-VerifyAudio"), "audio verification switch was not emitted");
 }
 
 static void CheckArgumentListSpecialPaths()
@@ -306,6 +311,23 @@ static void CheckConversionProgressParsing()
     Equal(16, trackProgress.Total, "track total differs");
     Equal("03 - title.flac", trackProgress.Detail, "track detail differs");
 
+    True(ConversionProgressParser.TryParse(
+        "Verifying track 3/16 -> 03 - title.flac",
+        out var verificationProgress), "valid verification progress was not parsed");
+    Equal(ConversionProgressKind.TrackVerificationStarted, verificationProgress!.Kind,
+        "verification-start event kind differs");
+    Equal(3, verificationProgress.Current, "verification current differs");
+    Equal(16, verificationProgress.Total, "verification total differs");
+    Equal("03 - title.flac", verificationProgress.Detail, "verification detail differs");
+
+    True(ConversionProgressParser.TryParse(
+        "Verified track 3/16: lossless PCM SHA-256 match",
+        out var verifiedProgress), "valid verified progress was not parsed");
+    Equal(ConversionProgressKind.TrackVerified, verifiedProgress!.Kind,
+        "verified event kind differs");
+    Equal(3, verifiedProgress.Current, "verified current differs");
+    Equal(16, verifiedProgress.Total, "verified total differs");
+
     True(ConversionProgressParser.TryParse("Tracks:      16", out var trackCount),
         "track count was not parsed");
     Equal(ConversionProgressKind.TrackCount, trackCount!.Kind, "track-count event kind differs");
@@ -335,6 +357,11 @@ static void CheckConversionProgressParsing()
                  "Converting track 1/0 -> x.flac",
                  "WARNING: Converting track 1/16 -> x.flac",
                  "Converting track 1/16",
+                 "Verifying track 0/16 -> x.flac",
+                 "Verifying track 17/16 -> x.flac",
+                 "Verified track 0/16: lossless PCM SHA-256 match",
+                 "Verified track 17/16: lossless PCM SHA-256 match",
+                 "Verified track 1/16: hash mismatch",
                  string.Empty,
              })
     {

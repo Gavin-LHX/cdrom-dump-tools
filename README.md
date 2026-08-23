@@ -37,6 +37,7 @@
 
 - 解析 `cdrdao` TOC，按字节边界拆分 CD-DA 音轨。
 - 使用 FFmpeg 输出无损 FLAC 或 WAV。
+- 可用 `-VerifyAudio` 对每轨做本地无损校验：分别计算 BIN 对应字节段与成品解码为 CD-DA PCM（s16be、44.1 kHz、双声道）后的 SHA-256；GUI 默认开启，任一轨不一致就中止且不发布最终目录。
 - 自动计算 MusicBrainz Disc ID 并匹配正确发行版本。
 - 自动写入曲名、歌手、专辑、年份、日期、流派、ISRC、条码和 MusicBrainz ID。
 - 光盘身份识别固定优先使用 MusicBrainz Disc ID/TOC；若查不到，才会读取同目录可信 JSON、TOC CD-TEXT 或 `艺术家 - 专辑 (年份)` 目录名作为搜索提示，并且仍须由国内平台候选通过轨数/时长校验后才接受。
@@ -65,7 +66,8 @@
 - 同步 `.lrc` 会同时转换为 UTF-8 SRT，集中保存到输出目录的 `Subtitles/` 文件夹；文件名与音频一致，可供 VLC 等播放器加载。
 - FLAC 写入 `LYRICS`、`SYNCEDLYRICS`、`LYRICS_SOURCE`，并分别保留 `LYRICS_ORIGINAL`、`LYRICS_TRANSLATION`、`LYRICS_ROMANIZED` 及对应同步标签。
 - 纯音乐会标记为 `instrumental`，不会写入伪歌词。
-- 输出 `metadata.json`、兼容旧版的 `musicbrainz-metadata.json`、`lyrics-metadata.json`、播放列表和 SHA-256 校验和。
+- 启用逐轨无损校验时输出机器可读的 `audio-verification.json` 和便于人工查看的 `audio-verification.txt`；`SHA256SUMS.txt` 完整覆盖最终目录内除清单自身以外的全部文件，包括音频、封面、歌词、字幕、元数据和校验报告。
+- 输出 `metadata.json`、兼容旧版的 `musicbrainz-metadata.json`、`lyrics-metadata.json` 和播放列表。
 - MusicBrainz 请求全局限制为最多每 1.1 秒一次；遇到 429、503 或临时 5xx 时遵循 `Retry-After` 或指数退避，最多重试 5 次后再使用镜像/缓存。
 - 在线服务不可用时使用 30 天缓存、多源回退或降级转换，不中断音频处理。
 - 网易云、QQ 音乐和 LRCLIB 歌词使用独立缓存命名空间；接口临时不可用时会依次切换备用域名、退避重试、使用缓存或进入下一来源。
@@ -73,7 +75,7 @@
 
 ### Windows 图形界面
 
-[`gui/`](gui/README.md) 提供重新设计的 .NET 8 WinForms 前端。正式发布的自包含单 EXE 嵌入与根脚本同源的 PowerShell 转换引擎，但不重新实现其业务逻辑。常用转换、歌词/AI 和高级设置采用分组页签，选项使用中文说明和正向功能开关；主界面的“配置模型与 API Key…”可直接配置 OpenAI Chat Completions 兼容接口、Anthropic Messages 兼容接口、Google Cloud Translation Basic v2、Microsoft Azure Translator v3 和可选 Prompt 文件。Google GTX 与 Bing 网页翻译无需配置。运行时会显示在线查询阶段、曲目 `X/Y`、进度和耗时，并从日志识别经专辑元数据命名后的实际输出目录。
+[`gui/`](gui/README.md) 提供重新设计的 .NET 8 WinForms 前端。正式发布的自包含单 EXE 嵌入与根脚本同源的 PowerShell 转换引擎，但不重新实现其业务逻辑。常用转换、歌词/AI 和高级设置采用分组页签，选项使用中文说明和正向功能开关；逐轨无损校验默认开启。主界面的“配置模型与 API Key…”可直接配置 OpenAI Chat Completions 兼容接口、Anthropic Messages 兼容接口、Google Cloud Translation Basic v2、Microsoft Azure Translator v3 和可选 Prompt 文件。Google GTX 与 Bing 网页翻译无需配置。运行时会显示在线查询、转换和逐轨校验阶段、曲目 `X/Y`、进度和耗时，并从日志识别经专辑元数据命名后的实际输出目录。
 
 运行日志和命令预览位于独立页签；日志可复制或清空，命令可一键复制。命令自动换行且没有横向滚动条，也不会显示 API Key。为已启用服务填写的 GUI 翻译配置通过子 PowerShell 进程环境覆盖 `.env`，未启用服务的界面默认值不会遮蔽 `.env`；脚本解析后会先清除这些环境变量，再启动 FFmpeg 等子进程。Key 可选择仅保留在当前会话内存，或使用 Windows 当前用户 DPAPI 加密后保存到 `%LOCALAPPDATA%\CdromDumpToolsGui\settings.json`；明文不会进入参数、预览、日志、EXE 或 Release。
 
@@ -231,6 +233,11 @@ MusicBrainz 要求客户端不超过每秒一次请求。脚本会在所有 Musi
   -OutputDirectory 'D:\Music\My Album' `
   -FfmpegPath 'D:\Apps\FFmpeg\bin\ffmpeg.exe'
 
+# 对每轨执行本地无损 PCM SHA-256 校验（GUI 默认开启；命令行需显式指定）
+.\bin_to_audio_windows.ps1 `
+  -BinPath 'D:\CD\disc.bin' `
+  -VerifyAudio
+
 # 网易云/QQ/LRCLIB 均没有中文时，依次使用 AI、Google Cloud、Azure、GTX、Bing 回退
 .\bin_to_audio_windows.ps1 `
   -BinPath 'D:\CD\disc.bin' `
@@ -262,6 +269,9 @@ MusicBrainz 要求客户端不超过每秒一次请求。脚本会在所有 Musi
 
 # 不使用 QQ 音乐元数据和歌词
 -NoQQMusic
+
+# 将每轨成品解码后的 PCM 与 BIN 原始字节段做 SHA-256 对比；失败时不发布最终目录
+-VerifyAudio
 
 # 转换完成后不等待按键，适合批处理或自动化；默认会等待按任意键退出
 -NoPause
@@ -430,8 +440,12 @@ verification-pass-2/
 ├── metadata.json
 ├── musicbrainz-metadata.json
 ├── lyrics-metadata.json
+├── audio-verification.json
+├── audio-verification.txt
 └── SHA256SUMS.txt
 ```
+
+上例中的两个 `audio-verification.*` 文件只在启用 `-VerifyAudio` 时生成，记录每轨源字节段哈希、成品解码 PCM 哈希和比对结论。`SHA256SUMS.txt` 始终列出最终目录内除清单自身以外的全部文件，子目录文件使用相对路径，可用于检查整个交付目录是否缺失或损坏。
 
 校验镜像：
 
@@ -446,6 +460,7 @@ sha256sum --check SHA256SUMS
 - `dump_cdrom.sh` 可以归档混合模式 CD，但后续应使用理解对应数据轨格式的工具处理。
 - WAV 对封面和自定义歌词标签的播放器兼容性有限，因此脚本始终保留同名歌词旁挂文件。
 - 只有带时间戳的 `.lrc` 能准确转换为 SRT；纯文本 `.txt` 没有时间信息，因此仍只作为歌词旁挂文件保留。
+- `-VerifyAudio` 会额外顺序读取一遍对应 BIN 字节段并让 FFmpeg 解码每首成品，因此会增加磁盘读取、CPU 和总耗时；校验完全在本地进行，不会上传音频。
 - 不同发行版、再版和地区版可能共享相似曲目表。出现多个 MusicBrainz 匹配时请确认发行日期、国家和介质序号。
 - 逐轨国内匹配仍要求候选属于同名专辑；国内平台只把附赠曲收录在另一张专辑时会保留 MusicBrainz 标签并继续使用后续歌词源，这是有意的防误配策略。
 - CD 音频本身通常不包含可搜索的专辑名，因此 MusicBrainz 仍承担首要 Disc ID/TOC 身份识别。若 MusicBrainz 完全没有该光盘，脚本只会采用同目录已有 JSON、TOC CD-TEXT 或结构明确的目录名作为提示；国内候选未通过整专轨数和时长校验时仍降级为基础轨号，不会仅凭名字猜专辑。

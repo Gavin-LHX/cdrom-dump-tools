@@ -10,6 +10,8 @@ public enum ConversionProgressKind
     Cover,
     TrackCount,
     TrackStarted,
+    TrackVerificationStarted,
+    TrackVerified,
 }
 
 public sealed record ConversionProgressEvent(
@@ -28,6 +30,12 @@ public static partial class ConversionProgressParser
 
     [GeneratedRegex(@"^Converting track (?<current>\d+)/(?<total>\d+) -> (?<detail>.+)$", RegexOptions.CultureInvariant)]
     private static partial Regex TrackStartedLineRegex();
+
+    [GeneratedRegex(@"^Verifying track (?<current>\d+)/(?<total>\d+) -> (?<detail>.+)$", RegexOptions.CultureInvariant)]
+    private static partial Regex TrackVerificationStartedLineRegex();
+
+    [GeneratedRegex(@"^Verified track (?<current>\d+)/(?<total>\d+): lossless PCM SHA-256 match$", RegexOptions.CultureInvariant)]
+    private static partial Regex TrackVerifiedLineRegex();
 
     public static bool TryParse(string? line, out ConversionProgressEvent? progressEvent)
     {
@@ -85,6 +93,33 @@ public static partial class ConversionProgressParser
                 Current: current,
                 Total: total,
                 Detail: CleanDetail(trackMatch.Groups["detail"].Value));
+            return true;
+        }
+
+        var verificationMatch = TrackVerificationStartedLineRegex().Match(line);
+        if (verificationMatch.Success
+            && TryReadPositiveInt(verificationMatch.Groups["current"].Value, out var verificationCurrent)
+            && TryReadPositiveInt(verificationMatch.Groups["total"].Value, out var verificationTotal)
+            && verificationCurrent <= verificationTotal)
+        {
+            progressEvent = new ConversionProgressEvent(
+                ConversionProgressKind.TrackVerificationStarted,
+                Current: verificationCurrent,
+                Total: verificationTotal,
+                Detail: CleanDetail(verificationMatch.Groups["detail"].Value));
+            return true;
+        }
+
+        var verifiedMatch = TrackVerifiedLineRegex().Match(line);
+        if (verifiedMatch.Success
+            && TryReadPositiveInt(verifiedMatch.Groups["current"].Value, out var verifiedCurrent)
+            && TryReadPositiveInt(verifiedMatch.Groups["total"].Value, out var verifiedTotal)
+            && verifiedCurrent <= verifiedTotal)
+        {
+            progressEvent = new ConversionProgressEvent(
+                ConversionProgressKind.TrackVerified,
+                Current: verifiedCurrent,
+                Total: verifiedTotal);
             return true;
         }
 
