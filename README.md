@@ -355,7 +355,7 @@ notepad .env
 仓库内置 GitHub Actions：
 
 - **CI**：Pull Request、推送到 `main`/`gui` 或手动运行时，在 Ubuntu 24.04 检查 Bash 语法、ShellCheck 和 Linux 转换器离线 dry-run；在 Windows Server 2025 使用固定的 .NET 8 SDK 还原、构建并检查 GUI（包括嵌入转换脚本），再验证 `win-x64` 自包含发布目录恰好只有一个 EXE；同时分别使用 PowerShell 7 与 Windows PowerShell 5.1 解析脚本、运行离线 smoke test，并执行关键 PSScriptAnalyzer 规则。
-- **CD**：推送指向 `main` 历史的 SemVer 标签（例如 `v2.8.0`）后，先复用完整 CI，再在 Windows 构建并实际自检自包含 `win-x64` 单 EXE；随后发布该精确 EXE、可选空白 `.env.example`、Linux tar.gz、内嵌 .NET Runtime 对应的许可证/第三方通知和 `SHA256SUMS.txt`。Windows 用户运行时仍只需下载 EXE，不再需要解压 ZIP、另放 PowerShell 脚本或安装 .NET Runtime。
+- **CD**：推送指向 `main` 历史的 SemVer 标签（例如 `v2.9.0`）后，先复用完整 CI，再在 Windows 构建并实际自检自包含 `win-x64` 单 EXE；随后发布该精确 EXE、可选空白 `.env.example`、Linux tar.gz、内嵌 .NET Runtime 对应的许可证/第三方通知和 `SHA256SUMS.txt`。Windows 用户运行时仍只需下载 EXE，不再需要解压 ZIP、另放 PowerShell 脚本或安装 .NET Runtime。
 - GitHub Actions 依赖固定到完整提交 SHA，并由 Dependabot 每周检查更新；CI 只拥有仓库读取权限，只有发布作业拥有 `contents: write`。
 
 发布新版本：
@@ -363,8 +363,8 @@ notepad .env
 ```bash
 git switch main
 git pull --ff-only
-git tag v2.8.0
-git push origin v2.8.0
+git tag v2.9.0
+git push origin v2.9.0
 ```
 
 Release 直接提供 Windows 单 EXE和空白 `.env.example`，Linux tar.gz 仍只包含 Linux 脚本与 README；同页的 .NET `LICENSE` 与 `THIRD-PARTY-NOTICES` 是内嵌 Runtime 的许可资料，不是运行依赖。Release 绝不包含真实 `.env`、API Key、BIN、音频、缓存、歌词或本地生成的元数据。

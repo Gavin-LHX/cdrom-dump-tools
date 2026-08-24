@@ -41,7 +41,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           if ($env:GITHUB_REF_NAME -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:[.-][0-9A-Za-z.-]+)?$') {
-              throw "Tag must be a SemVer-like value such as v2.8.0: $env:GITHUB_REF_NAME"
+              throw "Tag must be a SemVer-like value such as v2.9.0: $env:GITHUB_REF_NAME"
           }
 
           $version = $env:GITHUB_REF_NAME.Substring(1)
@@ -157,7 +157,7 @@ jobs:
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
           if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-            printf 'Tag must be a SemVer-like value such as v2.8.0: %s\n' "$tag" >&2
+            printf 'Tag must be a SemVer-like value such as v2.9.0: %s\n' "$tag" >&2
             exit 1
           fi
           git fetch --no-tags origin main
