@@ -45,7 +45,7 @@ dist/macos/cdrom-dump-tools-<version>-macos-arm64-unsigned.dmg
 
 `build_macos_app.sh` 在成功前会完成以下检查：
 
-- 主程序、PowerShell、FFmpeg 及所有捆绑 Mach-O 文件都只能包含 `arm64` slice。
+- 主程序与 FFmpeg 必须是 `arm64`；官方 PowerShell 包内的 Mach-O 必须包含可运行的 `arm64` slice（个别官方库可能同时带有 `x86_64` slice）。
 - `Info.plist` 语法、bundle ID、最低系统版本、发布版本、构建号和“未公证”标记准确。
 - FFmpeg 配置明确禁用 GPL/nonfree/version3，且仅链接 macOS 系统动态库。
 - 应用及嵌套 Mach-O 可通过严格 ad-hoc `codesign` 验证。

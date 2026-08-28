@@ -74,7 +74,18 @@ assert_arm64_macho() {
     [[ "$architecture" == 'arm64' ]] || die "expected arm64-only Mach-O, got '$architecture': $path"
 }
 
-assert_macho_tree_arm64() {
+assert_macho_contains_arm64() {
+    local path="$1"
+    local architectures=''
+    file "$path" | grep -Fq 'Mach-O' || die "expected a Mach-O file: $path"
+    architectures="$(lipo -archs "$path")"
+    case " $architectures " in
+        *' arm64 '*) ;;
+        *) die "Mach-O does not contain an arm64 slice ('$architectures'): $path" ;;
+    esac
+}
+
+assert_macho_tree_supports_arm64() {
     local root="$1"
     local candidate=''
     local found=0
@@ -82,7 +93,7 @@ assert_macho_tree_arm64() {
     while IFS= read -r -d '' candidate; do
         if file "$candidate" | grep -Fq 'Mach-O'; then
             found=1
-            assert_arm64_macho "$candidate"
+            assert_macho_contains_arm64 "$candidate"
         fi
     done < <(find "$root" -type f -print0)
 
@@ -226,7 +237,7 @@ mkdir -p -- "$powershell_directory"
 tar -xzf "$powershell_archive_path" -C "$powershell_directory"
 chmod 0755 "$powershell_directory/pwsh"
 assert_arm64_macho "$powershell_directory/pwsh"
-assert_macho_tree_arm64 "$powershell_directory"
+assert_macho_tree_supports_arm64 "$powershell_directory"
 powershell_reported_version="$(
     "$powershell_directory/pwsh" \
         -NoLogo \
@@ -353,7 +364,7 @@ sed \
 plutil -lint "$contents_directory/Info.plist" >/dev/null
 assert_arm64_macho "$macos_directory/$EXECUTABLE_NAME"
 assert_only_system_dynamic_dependencies "$macos_directory/$EXECUTABLE_NAME"
-assert_macho_tree_arm64 "$runtime_directory/powershell"
+assert_macho_tree_supports_arm64 "$runtime_directory/powershell"
 assert_arm64_macho "$runtime_directory/ffmpeg"
 cmp -s "$CONVERTER_SCRIPT" "$resources_directory/bin_to_audio.ps1" ||
     die 'the bundled converter differs from the repository source'
