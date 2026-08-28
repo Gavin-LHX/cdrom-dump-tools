@@ -2,8 +2,11 @@ namespace CdromDumpToolsGui.Core;
 
 public sealed class ConversionOptions
 {
+    public const string CurrentVersion = "2.10.0";
     public const string DefaultMusicBrainzUserAgent =
-        "BinToAudioWindows/2.9.0 (https://github.com/Gavin-LHX/cdrom-dump-tools)";
+        "BinToAudioWindows/" + CurrentVersion + " (https://github.com/Gavin-LHX/cdrom-dump-tools)";
+    private const string OfficialUserAgentSuffix =
+        " (https://github.com/Gavin-LHX/cdrom-dump-tools)";
 
     public string BinPath { get; set; } = string.Empty;
     public string Format { get; set; } = "flac";
@@ -23,4 +26,25 @@ public sealed class ConversionOptions
     public string DomesticSourcePriority { get; set; } = "NetEaseFirst";
     public int ReleaseIndex { get; set; }
     public string MusicBrainzUserAgent { get; set; } = DefaultMusicBrainzUserAgent;
+    public bool PromptForReleaseSelection { get; set; }
+
+    public static string NormalizeMusicBrainzUserAgent(string? value)
+    {
+        var trimmed = value?.Trim();
+        if (string.IsNullOrWhiteSpace(trimmed))
+        {
+            return DefaultMusicBrainzUserAgent;
+        }
+
+        if (trimmed.StartsWith("BinToAudioWindows/", StringComparison.Ordinal)
+            && trimmed.EndsWith(OfficialUserAgentSuffix, StringComparison.Ordinal)
+            && Version.TryParse(
+                trimmed["BinToAudioWindows/".Length..^OfficialUserAgentSuffix.Length],
+                out _))
+        {
+            return DefaultMusicBrainzUserAgent;
+        }
+
+        return trimmed;
+    }
 }

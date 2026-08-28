@@ -39,6 +39,7 @@
 - 使用 FFmpeg 输出无损 FLAC 或 WAV。
 - 可用 `-VerifyAudio` 对每轨做本地无损校验：分别计算 BIN 对应字节段与成品解码为 CD-DA PCM（s16be、44.1 kHz、双声道）后的 SHA-256；GUI 默认开启，任一轨不一致就中止且不发布最终目录。
 - 自动计算 MusicBrainz Disc ID 并匹配正确发行版本。
+- MusicBrainz 返回多个同轨数发行版本时，GUI 会显示艺术家、专辑、日期、地区和碟号供本次转换选择；命令行仍可用 `-ReleaseIndex` 明确指定。
 - 自动写入曲名、歌手、专辑、年份、日期、流派、ISRC、条码和 MusicBrainz ID。
 - 光盘身份识别固定优先使用 MusicBrainz Disc ID/TOC；若查不到，才会读取同目录可信 JSON、TOC CD-TEXT 或 `艺术家 - 专辑 (年份)` 目录名作为搜索提示，并且仍须由国内平台候选通过轨数/时长校验后才接受。
 - 识别出发行版后，曲名、艺人和专辑等展示字段默认按“选定的国内主源（网易云优先，可切换为 QQ）→ MusicBrainz”填充；日期和流派优先采用已验证国内源，缺失时再由 MusicBrainz、Apple、Wikidata 等证据补全和比对。
@@ -77,7 +78,7 @@
 
 [`gui/`](gui/README.md) 提供重新设计的 .NET 8 WinForms 前端。正式发布的自包含单 EXE 嵌入与根脚本同源的 PowerShell 转换引擎，但不重新实现其业务逻辑。常用转换、歌词/AI 和高级设置采用分组页签，选项使用中文说明和正向功能开关；逐轨无损校验默认开启。主界面的“配置模型与 API Key…”可直接配置 OpenAI Chat Completions 兼容接口、Anthropic Messages 兼容接口、Google Cloud Translation Basic v2、Microsoft Azure Translator v3 和可选 Prompt 文件。Google GTX 与 Bing 网页翻译无需配置。运行时会显示在线查询、转换和逐轨校验阶段、曲目 `X/Y`、进度和耗时，并从日志识别经专辑元数据命名后的实际输出目录。
 
-运行日志和命令预览位于独立页签；日志可复制或清空，命令可一键复制。命令自动换行且没有横向滚动条，也不会显示 API Key。为已启用服务填写的 GUI 翻译配置通过子 PowerShell 进程环境覆盖 `.env`，未启用服务的界面默认值不会遮蔽 `.env`；脚本解析后会先清除这些环境变量，再启动 FFmpeg 等子进程。Key 可选择仅保留在当前会话内存，或使用 Windows 当前用户 DPAPI 加密后保存到 `%LOCALAPPDATA%\CdromDumpToolsGui\settings.json`；明文不会进入参数、预览、日志、EXE 或 Release。
+运行日志和命令预览位于独立页签；日志可复制或清空，并可切换“自动跟随最新日志”。只有用户原本停留在底部时，新日志才会继续跟随；向上阅读时会保留精确位置，不再由定时刷新抢动滚动条。命令可一键复制、自动换行且没有横向滚动条，也不会显示 API Key。为已启用服务填写的 GUI 翻译配置通过子 PowerShell 进程环境覆盖 `.env`，未启用服务的界面默认值不会遮蔽 `.env`；脚本解析后会先清除这些环境变量，再启动 FFmpeg 等子进程。Key 可选择仅保留在当前会话内存，或使用 Windows 当前用户 DPAPI 加密后保存到 `%LOCALAPPDATA%\CdromDumpToolsGui\settings.json`；明文不会进入参数、预览、日志、EXE 或 Release。
 
 在仓库中构建或发布 GUI：
 
@@ -289,7 +290,7 @@ MusicBrainz 要求客户端不超过每秒一次请求。脚本会在所有 Musi
 # 标签和封面的两个国内源均匹配时优先使用 QQ 音乐；默认值为 NetEaseFirst，不改变歌词的中文翻译优先规则
 -DomesticSourcePriority QQMusicFirst
 
-# MusicBrainz 返回多个发行版本时选择指定序号
+# MusicBrainz 返回多个发行版本时选择指定序号；GUI 中保持 0 会在识别后弹窗选择
 -ReleaseIndex 2
 
 # 自定义符合 MusicBrainz 要求的客户端 User-Agent
@@ -355,7 +356,7 @@ notepad .env
 仓库内置 GitHub Actions：
 
 - **CI**：Pull Request、推送到 `main`/`gui` 或手动运行时，在 Ubuntu 24.04 检查 Bash 语法、ShellCheck 和 Linux 转换器离线 dry-run；在 Windows Server 2025 使用固定的 .NET 8 SDK 还原、构建并检查 GUI（包括嵌入转换脚本），再验证 `win-x64` 自包含发布目录恰好只有一个 EXE；同时分别使用 PowerShell 7 与 Windows PowerShell 5.1 解析脚本、运行离线 smoke test，并执行关键 PSScriptAnalyzer 规则。
-- **CD**：推送指向 `main` 历史的 SemVer 标签（例如 `v2.9.0`）后，先复用完整 CI，再在 Windows 构建并实际自检自包含 `win-x64` 单 EXE；随后发布该精确 EXE、可选空白 `.env.example`、Linux tar.gz、内嵌 .NET Runtime 对应的许可证/第三方通知和 `SHA256SUMS.txt`。Windows 用户运行时仍只需下载 EXE，不再需要解压 ZIP、另放 PowerShell 脚本或安装 .NET Runtime。
+- **CD**：推送指向 `main` 历史的 SemVer 标签（例如 `v2.10.0`）后，先复用完整 CI，再在 Windows 构建并实际自检自包含 `win-x64` 单 EXE；随后发布该精确 EXE、可选空白 `.env.example`、Linux tar.gz、内嵌 .NET Runtime 对应的许可证/第三方通知和 `SHA256SUMS.txt`。Windows 用户运行时仍只需下载 EXE，不再需要解压 ZIP、另放 PowerShell 脚本或安装 .NET Runtime。
 - GitHub Actions 依赖固定到完整提交 SHA，并由 Dependabot 每周检查更新；CI 只拥有仓库读取权限，只有发布作业拥有 `contents: write`。
 
 发布新版本：
@@ -363,8 +364,8 @@ notepad .env
 ```bash
 git switch main
 git pull --ff-only
-git tag v2.9.0
-git push origin v2.9.0
+git tag v2.10.0
+git push origin v2.10.0
 ```
 
 Release 直接提供 Windows 单 EXE和空白 `.env.example`，Linux tar.gz 仍只包含 Linux 脚本与 README；同页的 .NET `LICENSE` 与 `THIRD-PARTY-NOTICES` 是内嵌 Runtime 的许可资料，不是运行依赖。Release 绝不包含真实 `.env`、API Key、BIN、音频、缓存、歌词或本地生成的元数据。

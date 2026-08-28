@@ -51,6 +51,7 @@ internal sealed class MainForm : Form
     private readonly CheckBox _qqMusicCheckBox = NewCheckBox("使用 QQ 音乐", isChecked: true);
     private readonly CheckBox _verifyAudioCheckBox = NewCheckBox("逐轨无损校验（推荐）", isChecked: true);
     private readonly CheckBox _openOnSuccessCheckBox = NewCheckBox("成功后打开目录");
+    private readonly CheckBox _followLogCheckBox = NewCheckBox("自动跟随最新日志", isChecked: true);
     private readonly Label _aiStatusLabel = new()
     {
         AutoSize = true,
@@ -109,6 +110,7 @@ internal sealed class MainForm : Form
     private readonly TabControl _settingsTabs = new();
     private readonly ConcurrentQueue<LogEntry> _pendingLogEntries = new();
     private readonly ConcurrentQueue<ConversionProgressEvent> _pendingProgressEvents = new();
+    private readonly ConcurrentQueue<IReadOnlyList<ReleaseCandidate>> _pendingReleaseSelections = new();
     private readonly System.Windows.Forms.Timer _uiTimer = new() { Interval = 100 };
     private readonly System.Windows.Forms.Timer _previewTimer = new() { Interval = 220 };
     private readonly Stopwatch _elapsedWatch = new();
@@ -124,6 +126,7 @@ internal sealed class MainForm : Form
     private StoredAiSettings _storedAiSettings;
     private bool _rememberAiKeys;
     private readonly bool _hadUnreadableSavedSecret;
+    private bool _releaseSelectionDialogOpen;
 
     public MainForm()
     {
@@ -356,11 +359,11 @@ internal sealed class MainForm : Form
         advancedValues.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 36F));
         advancedValues.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         advancedValues.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 64F));
-        AddLabeledControl(advancedValues, 0, 0, "候选专辑序号", _releaseIndexInput);
+        AddLabeledControl(advancedValues, 0, 0, "强制候选序号", _releaseIndexInput);
         AddLabeledControl(advancedValues, 0, 2, "MusicBrainz User-Agent", _userAgentTextBox);
         advancedOptions.Controls.Add(advancedValues, 0, 2);
         advancedOptions.SetColumnSpan(advancedValues, 4);
-        var advancedHint = NewHintLabel("候选序号为 0 时非交互地使用第 1 个候选；FFmpeg 和 .env 留空时按默认位置自动查找。");
+        var advancedHint = NewHintLabel("候选序号为 0 时，如识别到多个版本会弹窗选择；填写 1..1000 可强制使用对应候选。FFmpeg 和 .env 留空时按默认位置自动查找。");
         advancedOptions.Controls.Add(advancedHint, 0, 3);
         advancedOptions.SetColumnSpan(advancedHint, 4);
         advancedPage.Controls.Add(advancedOptions);
@@ -414,7 +417,7 @@ internal sealed class MainForm : Form
             CopyTextToClipboard(_logTextBox.Text, "日志");
         };
         clearLogButton.Click += (_, _) => ClearLogView();
-        logToolbar.Controls.AddRange(new Control[] { copyLogButton, clearLogButton });
+        logToolbar.Controls.AddRange(new Control[] { copyLogButton, clearLogButton, _followLogCheckBox });
         logLayout.Controls.Add(logToolbar, 0, 0);
         logLayout.Controls.Add(_logTextBox, 0, 1);
         logPage.Controls.Add(logLayout);
@@ -522,8 +525,16 @@ internal sealed class MainForm : Form
         _lyricsCheckBox.CheckedChanged += (_, _) => UpdateAiStatus();
         _lyricsFallbackComboBox.SelectedIndexChanged += (_, _) => UpdateAiStatus();
         _aiProviderComboBox.SelectedIndexChanged += (_, _) => UpdateAiStatus();
+        _followLogCheckBox.CheckedChanged += (_, _) =>
+        {
+            if (_followLogCheckBox.Checked)
+            {
+                RichTextBoxViewport.ScrollToEnd(_logTextBox);
+            }
+        };
 
-        _toolTip.SetToolTip(_releaseIndexInput, "0 表示非交互地使用第 1 个候选；1..1000 指定候选序号。");
+        _toolTip.SetToolTip(_releaseIndexInput, "0 表示检测到多个候选后弹窗询问；1..1000 强制指定候选序号。");
+        _toolTip.SetToolTip(_followLogCheckBox, "关闭后，新日志不会改变当前阅读位置；重新打开会跳到最新日志。");
         _toolTip.SetToolTip(_envTextBox, "高级兼容入口：GUI 只保存路径；日常使用请直接点击“配置模型与 API Key…”。");
         _toolTip.SetToolTip(_aiSettingsButton, "配置 OpenAI、Anthropic、Google Cloud 与 Microsoft Azure 的正式/兼容端点和 API Key；免 Key 回退无需配置。");
         _toolTip.SetToolTip(_verifyAudioCheckBox, "转换后把输出解码回标准 CD PCM，与 BIN 对应片段做 SHA-256 比较；会增加一次顺序读取。");
@@ -550,9 +561,7 @@ internal sealed class MainForm : Form
         _qqMusicCheckBox.Checked = !_settings.NoQQMusic;
         _verifyAudioCheckBox.Checked = _settings.VerifyAudio;
         _openOnSuccessCheckBox.Checked = _settings.OpenOutputOnSuccess;
-        _userAgentTextBox.Text = string.IsNullOrWhiteSpace(_settings.MusicBrainzUserAgent)
-            ? ConversionOptions.DefaultMusicBrainzUserAgent
-            : _settings.MusicBrainzUserAgent;
+        _userAgentTextBox.Text = ConversionOptions.NormalizeMusicBrainzUserAgent(_settings.MusicBrainzUserAgent);
     }
 
     private AppSettings CaptureSettings() => new()
@@ -604,6 +613,7 @@ internal sealed class MainForm : Form
             DomesticSourcePriority = settings.DomesticSourcePriority,
             ReleaseIndex = settings.ReleaseIndex,
             MusicBrainzUserAgent = settings.MusicBrainzUserAgent,
+            PromptForReleaseSelection = true,
         };
     }
 
@@ -653,6 +663,7 @@ internal sealed class MainForm : Form
             return;
         }
 
+        ClearPendingReleaseSelections();
         ClearLogView();
         try
         {
@@ -694,12 +705,11 @@ internal sealed class MainForm : Form
                 throw new InvalidOperationException("PowerShell 进程未能启动。");
             }
 
-            process.StandardInput.Close();
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
             await process.WaitForExitAsync();
             process.WaitForExit();
-            FlushUiUpdates();
+            FlushUiUpdates(showReleaseSelection: false);
 
             if (_cancellationRequested)
             {
@@ -748,6 +758,7 @@ internal sealed class MainForm : Form
         }
         finally
         {
+            ClearPendingReleaseSelections();
             if (_running)
             {
                 SetRunningState(false, "已停止");
@@ -774,10 +785,12 @@ internal sealed class MainForm : Form
             return;
         }
 
+        _cancellationRequested = true;
         try
         {
             if (process.HasExited)
             {
+                ClearPendingReleaseSelections();
                 return;
             }
 
@@ -786,15 +799,17 @@ internal sealed class MainForm : Form
             _cancelButton.Enabled = false;
             // ffmpeg and helper processes must not survive cancellation.
             process.Kill(entireProcessTree: true);
-            _cancellationRequested = true;
+            ClearPendingReleaseSelections();
             AppendLog("已请求取消，并终止整个转换进程树。", isError: true);
         }
         catch (InvalidOperationException)
         {
             // The process exited between HasExited and Kill.
+            ClearPendingReleaseSelections();
         }
         catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or NotSupportedException)
         {
+            _cancellationRequested = false;
             AppendLog("取消失败：" + exception.Message, isError: true);
             _statusLabel.Text = "取消失败，转换仍在进行";
             _phaseLabel.Text = "转换仍在进行";
@@ -809,6 +824,22 @@ internal sealed class MainForm : Form
             return;
         }
 
+        if (ReleaseSelectionProtocol.IsProtocolLine(line))
+        {
+            if (ReleaseSelectionProtocol.TryParse(line, out var candidates, out var protocolError))
+            {
+                _pendingReleaseSelections.Enqueue(candidates);
+            }
+            else
+            {
+                AppendLog("错误：无法读取 MusicBrainz 候选列表：" + protocolError, isError: true);
+                if (!IsDisposed && !Disposing && IsHandleCreated)
+                {
+                    BeginInvoke(new Action(CancelConversion));
+                }
+            }
+            return;
+        }
         if (OutputPathResolver.TryParseFromLogLine(line, out var parsed) && parsed is not null)
         {
             _reportedOutputDirectory = parsed;
@@ -833,7 +864,7 @@ internal sealed class MainForm : Form
         }
     }
 
-    private void FlushUiUpdates()
+    private void FlushUiUpdates(bool showReleaseSelection = true)
     {
         if (IsDisposed || Disposing)
         {
@@ -844,6 +875,10 @@ internal sealed class MainForm : Form
             ApplyProgressEvent(progressEvent);
         }
         FlushPendingLogEntries();
+        if (showReleaseSelection)
+        {
+            ShowPendingReleaseSelection();
+        }
         if (_elapsedWatch.IsRunning)
         {
             _elapsedLabel.Text = FormatElapsed(_elapsedWatch.Elapsed);
@@ -852,19 +887,116 @@ internal sealed class MainForm : Form
 
     private void FlushPendingLogEntries()
     {
-        while (_pendingLogEntries.TryDequeue(out var entry))
+        if (!_pendingLogEntries.TryDequeue(out var firstEntry))
         {
-            var start = _logTextBox.TextLength;
-            _logTextBox.AppendText(entry.Text + Environment.NewLine);
-            if (entry.IsError && entry.Text.Length > 0)
+            return;
+        }
+
+        var entries = new List<LogEntry> { firstEntry };
+        while (_pendingLogEntries.TryDequeue(out var queuedEntry))
+        {
+            entries.Add(queuedEntry);
+        }
+
+        var viewport = RichTextBoxViewport.Capture(_logTextBox);
+        var followLatest = _followLogCheckBox.Checked
+            && viewport.WasAtBottom
+            && viewport.SelectionLength == 0;
+        RichTextBoxViewport.BeginBatch(_logTextBox);
+        try
+        {
+            foreach (var entry in entries)
             {
-                _logTextBox.Select(start, entry.Text.Length);
-                _logTextBox.SelectionColor = Color.Gold;
-                _logTextBox.Select(_logTextBox.TextLength, 0);
-                _logTextBox.SelectionColor = _logTextBox.ForeColor;
+                var start = _logTextBox.TextLength;
+                _logTextBox.AppendText(entry.Text + Environment.NewLine);
+                if (entry.IsError && entry.Text.Length > 0)
+                {
+                    _logTextBox.Select(start, entry.Text.Length);
+                    _logTextBox.SelectionColor = Color.Gold;
+                    _logTextBox.Select(_logTextBox.TextLength, 0);
+                    _logTextBox.SelectionColor = _logTextBox.ForeColor;
+                }
+            }
+            if (followLatest)
+            {
+                RichTextBoxViewport.ScrollToEnd(_logTextBox);
+            }
+            else
+            {
+                RichTextBoxViewport.Restore(_logTextBox, viewport);
             }
         }
-        _logTextBox.ScrollToCaret();
+        finally
+        {
+            RichTextBoxViewport.EndBatch(_logTextBox);
+        }
+    }
+
+    private void ShowPendingReleaseSelection()
+    {
+        if (_releaseSelectionDialogOpen
+            || !_running
+            || _cancellationRequested
+            || _pendingReleaseSelections.IsEmpty)
+        {
+            return;
+        }
+
+        var process = _process;
+        try
+        {
+            if (process is null || process.HasExited)
+            {
+                ClearPendingReleaseSelections();
+                return;
+            }
+        }
+        catch (InvalidOperationException)
+        {
+            ClearPendingReleaseSelections();
+            return;
+        }
+
+        if (!_pendingReleaseSelections.TryDequeue(out var candidates))
+        {
+            return;
+        }
+
+        _releaseSelectionDialogOpen = true;
+        try
+        {
+            SetIndeterminateProgress("等待选择匹配的专辑版本…");
+            using var dialog = new ReleaseSelectionForm(candidates);
+            if (dialog.ShowDialog(this) != DialogResult.OK || dialog.SelectedCandidate is null)
+            {
+                AppendLog("已取消候选专辑选择，正在停止转换。", isError: true);
+                CancelConversion();
+                return;
+            }
+
+            var selected = dialog.SelectedCandidate!;
+            if (_cancellationRequested
+                || !ReferenceEquals(process, _process)
+                || process.HasExited)
+            {
+                AppendLog("错误：转换进程已在候选选择完成前退出。", isError: true);
+                return;
+            }
+
+            process.StandardInput.WriteLine(selected.Index.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            process.StandardInput.Flush();
+            AppendLog($"已选择候选 [{selected.Index}] {selected.Artist} - {selected.Title}，继续转换。");
+            SetIndeterminateProgress("正在使用所选版本补全专辑信息…");
+        }
+        catch (Exception exception) when (exception is IOException or InvalidOperationException)
+        {
+            AppendLog("错误：无法把候选选择发送给转换进程：" + exception.Message, isError: true);
+            CancelConversion();
+        }
+        finally
+        {
+            _releaseSelectionDialogOpen = false;
+        }
     }
 
     private void ClearLogView()
@@ -876,6 +1008,13 @@ internal sealed class MainForm : Form
         {
         }
         _logTextBox.Clear();
+    }
+
+    private void ClearPendingReleaseSelections()
+    {
+        while (_pendingReleaseSelections.TryDequeue(out _))
+        {
+        }
     }
 
     private void OpenDirectorySafely(string? directory)

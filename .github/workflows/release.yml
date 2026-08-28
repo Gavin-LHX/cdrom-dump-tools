@@ -41,7 +41,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           if ($env:GITHUB_REF_NAME -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:[.-][0-9A-Za-z.-]+)?$') {
-              throw "Tag must be a SemVer-like value such as v2.9.0: $env:GITHUB_REF_NAME"
+              throw "Tag must be a SemVer-like value such as v2.10.0: $env:GITHUB_REF_NAME"
           }
 
           $version = $env:GITHUB_REF_NAME.Substring(1)
@@ -51,6 +51,20 @@ jobs:
           $assetName = "cdrom-dump-tools-$version-windows-x64.exe"
           $licenseAssetName = "cdrom-dump-tools-$version-dotnet-LICENSE.txt"
           $noticesAssetName = "cdrom-dump-tools-$version-dotnet-THIRD-PARTY-NOTICES.txt"
+
+          $projectVersionNode = Select-Xml -Path $project -XPath '/Project/PropertyGroup/Version'
+          if ($null -eq $projectVersionNode -or [string]$projectVersionNode.Node.InnerText -cne $version) {
+              throw "Release tag version '$version' differs from the GUI project version '$($projectVersionNode.Node.InnerText)'."
+          }
+          $converterSource = Get-Content -LiteralPath '.\bin_to_audio_windows.ps1' -Raw
+          $converterVersions = @(
+              [regex]::Matches($converterSource, 'BinToAudioWindows/(?<version>[0-9]+\.[0-9]+\.[0-9]+)') |
+                  ForEach-Object { $_.Groups['version'].Value } |
+                  Sort-Object -Unique
+          )
+          if ($converterVersions.Count -ne 1 -or $converterVersions[0] -cne $version) {
+              throw "Release tag version '$version' differs from embedded converter component version(s): $($converterVersions -join ', ')."
+          }
 
           dotnet restore $project --runtime win-x64
           dotnet publish $project `
@@ -83,6 +97,14 @@ jobs:
             -PassThru
           if ($selfTest.ExitCode -ne 0) {
               throw "Published GUI embedded-script self-test failed with exit code $($selfTest.ExitCode)."
+          }
+          $viewportSelfTest = Start-Process `
+            -FilePath $publishedFiles[0].FullName `
+            -ArgumentList '--self-test-log-viewport' `
+            -Wait `
+            -PassThru
+          if ($viewportSelfTest.ExitCode -ne 0) {
+              throw "Published GUI log-viewport self-test failed with exit code $($viewportSelfTest.ExitCode)."
           }
 
           $productVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($publishedFiles[0].FullName).ProductVersion
@@ -157,7 +179,7 @@ jobs:
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
           if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-            printf 'Tag must be a SemVer-like value such as v2.9.0: %s\n' "$tag" >&2
+            printf 'Tag must be a SemVer-like value such as v2.10.0: %s\n' "$tag" >&2
             exit 1
           fi
           git fetch --no-tags origin main

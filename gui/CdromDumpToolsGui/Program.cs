@@ -7,12 +7,19 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
-        var isSelfTest = args.Length == 1
+        var isEmbeddedScriptSelfTest = args.Length == 1
             && (string.Equals(args[0], "--self-test", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(args[0], "--self-test-embedded-script", StringComparison.OrdinalIgnoreCase));
-        if (isSelfTest)
+        var isLogViewportSelfTest = args.Length == 1
+            && string.Equals(args[0], "--self-test-log-viewport", StringComparison.OrdinalIgnoreCase);
+        var isSelfTest = isEmbeddedScriptSelfTest || isLogViewportSelfTest;
+        if (isEmbeddedScriptSelfTest)
         {
             return RunEmbeddedScriptSelfTest();
+        }
+        if (isLogViewportSelfTest)
+        {
+            return RunLogViewportSelfTest();
         }
 
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
@@ -63,6 +70,89 @@ internal static class Program
             }
 
             return 0;
+        }
+        catch
+        {
+            return 1;
+        }
+    }
+
+    private static int RunLogViewportSelfTest()
+    {
+        try
+        {
+            Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+            Application.EnableVisualStyles();
+            using var host = new Form
+            {
+                ShowInTaskbar = false,
+                StartPosition = FormStartPosition.Manual,
+                Location = new Point(-32000, -32000),
+                ClientSize = new Size(480, 180),
+            };
+            using var log = new RichTextBox
+            {
+                Dock = DockStyle.Fill,
+                ReadOnly = true,
+                ScrollBars = RichTextBoxScrollBars.Vertical,
+                BorderStyle = BorderStyle.FixedSingle,
+            };
+            host.Controls.Add(log);
+            host.Show();
+
+            for (var index = 1; index <= 240; index++)
+            {
+                var appendViewport = RichTextBoxViewport.Capture(log);
+                if (!appendViewport.WasAtBottom)
+                {
+                    return 1;
+                }
+                RichTextBoxViewport.BeginBatch(log);
+                try
+                {
+                    log.AppendText($"log line {index:D3}" + Environment.NewLine);
+                    RichTextBoxViewport.ScrollToEnd(log);
+                }
+                finally
+                {
+                    RichTextBoxViewport.EndBatch(log);
+                }
+                Application.DoEvents();
+            }
+            if (!RichTextBoxViewport.Capture(log).WasAtBottom)
+            {
+                return 1;
+            }
+
+            var middleLine = log.GetFirstCharIndexFromLine(120);
+            log.Select(middleLine, "log line 121".Length);
+            log.ScrollToCaret();
+            Application.DoEvents();
+
+            var before = RichTextBoxViewport.Capture(log);
+            if (before.WasAtBottom)
+            {
+                return 1;
+            }
+            RichTextBoxViewport.BeginBatch(log);
+            try
+            {
+                log.Select(log.TextLength, 0);
+                log.AppendText(Environment.NewLine + "new background log line");
+                RichTextBoxViewport.Restore(log, before);
+            }
+            finally
+            {
+                RichTextBoxViewport.EndBatch(log);
+            }
+            Application.DoEvents();
+            var after = RichTextBoxViewport.Capture(log);
+
+            return after.SelectionStart == before.SelectionStart
+                && after.SelectionLength == before.SelectionLength
+                && after.ScrollPosition == before.ScrollPosition
+                ? 0
+                : 1;
         }
         catch
         {

@@ -19,6 +19,7 @@
     <Compile Include="..\CdromDumpToolsGui\Core\OutputPathResolver.cs" Link="Core\OutputPathResolver.cs" />
     <Compile Include="..\CdromDumpToolsGui\Core\PowerShellLocator.cs" Link="Core\PowerShellLocator.cs" />
     <Compile Include="..\CdromDumpToolsGui\Core\ConversionProgressParser.cs" Link="Core\ConversionProgressParser.cs" />
+    <Compile Include="..\CdromDumpToolsGui\Core\ReleaseSelectionProtocol.cs" Link="Core\ReleaseSelectionProtocol.cs" />
     <Compile Include="..\CdromDumpToolsGui\Settings.cs" Link="Settings.cs" />
     <EmbeddedResource Include="..\..\bin_to_audio_windows.ps1"
                       Link="Resources\bin_to_audio_windows.ps1"

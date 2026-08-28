@@ -172,6 +172,14 @@ jobs:
           if ($selfTest.ExitCode -ne 0) {
               throw "Published GUI embedded-script self-test failed with exit code $($selfTest.ExitCode)."
           }
+          $viewportSelfTest = Start-Process `
+            -FilePath $publishedFiles[0].FullName `
+            -ArgumentList '--self-test-log-viewport' `
+            -Wait `
+            -PassThru
+          if ($viewportSelfTest.ExitCode -ne 0) {
+              throw "Published GUI log-viewport self-test failed with exit code $($viewportSelfTest.ExitCode)."
+          }
 
       - name: Parse with PowerShell 7
         shell: pwsh
@@ -196,6 +204,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           & '.\tests\lyrics_translation_fallback.Tests.ps1'
           & '.\tests\audio_verification.Tests.ps1'
+          & '.\tests\release_selection_protocol.Tests.ps1'
 
       - name: Parse and smoke test with Windows PowerShell 5.1
         shell: powershell
@@ -377,6 +386,7 @@ jobs:
 
           & '.\tests\lyrics_translation_fallback.Tests.ps1'
           & '.\tests\audio_verification.Tests.ps1'
+          & '.\tests\release_selection_protocol.Tests.ps1'
 
       - name: Run critical PSScriptAnalyzer rules
         shell: pwsh

@@ -8,6 +8,9 @@ var checks = new (string Name, Action Run)[]
     ("Windows PowerShell UTF-8 wrapper is safely quoted", CheckWindowsPowerShellWrapper),
     ("output path parsing", CheckOutputPathParsing),
     ("conversion progress parsing", CheckConversionProgressParsing),
+    ("GUI release selection protocol", CheckReleaseSelectionProtocol),
+    ("embedded component version consistency", CheckVersionConsistency),
+    ("legacy built-in user agent migration", CheckMusicBrainzUserAgentMigration),
     ("unused output suggestion", CheckUnusedOutputSuggestion),
     ("explicit output validation", CheckExplicitOutputValidation),
     ("default output prediction", CheckDefaultOutputPrediction),
@@ -85,6 +88,103 @@ static void CheckAllConverterParameters()
     ParameterEquals(arguments, "-DomesticSourcePriority", "QQMusicFirst");
     ParameterEquals(arguments, "-ReleaseIndex", "1000");
     True(arguments.Contains("-VerifyAudio"), "audio verification switch was not emitted");
+
+    var interactiveOptions = FullOptions();
+    interactiveOptions.NoMetadata = false;
+    interactiveOptions.ReleaseIndex = 0;
+    interactiveOptions.PromptForReleaseSelection = true;
+    var interactiveArguments = ConverterCommand.BuildScriptArguments(interactiveOptions);
+    True(interactiveArguments.Contains("-GuiReleaseSelection"),
+        "GUI release-selection switch was not emitted for automatic candidate selection");
+
+    interactiveOptions.ReleaseIndex = 2;
+    True(!ConverterCommand.BuildScriptArguments(interactiveOptions).Contains("-GuiReleaseSelection"),
+        "an explicit release index must bypass the GUI candidate prompt");
+
+    interactiveOptions.ReleaseIndex = 0;
+    interactiveOptions.NoMetadata = true;
+    True(!ConverterCommand.BuildScriptArguments(interactiveOptions).Contains("-GuiReleaseSelection"),
+        "metadata-disabled conversion must not request a MusicBrainz candidate prompt");
+}
+
+static void CheckReleaseSelectionProtocol()
+{
+    var payload = """
+        [
+          {"index":1,"artist":"compllege","title":"Phant","date":"2024-10-27","country":"JP","disc":"1","release_id":"id-1","barcode":"111"},
+          {"index":2,"artist":"コンプレッジ","title":"ファント","date":"2016-12-30","country":"JP","disc":"1","release_id":"id-2","barcode":"222"}
+        ]
+        """;
+    var line = ReleaseSelectionProtocol.Prefix
+        + Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(payload));
+    True(ReleaseSelectionProtocol.IsProtocolLine(line), "valid protocol prefix was not recognized");
+    True(ReleaseSelectionProtocol.TryParse(line, out var candidates, out var error),
+        "valid candidate payload was rejected: " + error);
+    Equal(2, candidates.Count, "candidate count differs");
+    Equal("コンプレッジ", candidates[1].Artist, "non-ASCII candidate artist changed");
+    Equal("ファント", candidates[1].Title, "non-ASCII candidate title changed");
+    Equal("id-2", candidates[1].ReleaseId, "release ID changed");
+
+    True(!ReleaseSelectionProtocol.TryParse(
+            ReleaseSelectionProtocol.Prefix + "not-base64",
+            out _,
+            out _),
+        "malformed Base64 payload was accepted");
+    var duplicatePayload = """
+        [{"index":1,"title":"A"},{"index":1,"title":"B"}]
+        """;
+    True(!ReleaseSelectionProtocol.TryParse(
+            ReleaseSelectionProtocol.Prefix
+            + Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(duplicatePayload)),
+            out _,
+            out _),
+        "duplicate candidate indexes were accepted");
+
+    var script = System.Text.Encoding.UTF8.GetString(EmbeddedConverterScript.ReadEmbeddedBytesForChecks());
+    True(script.Contains("[switch] $GuiReleaseSelection", StringComparison.Ordinal),
+        "embedded converter lacks the GUI release-selection switch");
+    True(script.Contains(ReleaseSelectionProtocol.Prefix, StringComparison.Ordinal),
+        "embedded converter protocol prefix differs from the GUI parser");
+    True(script.Contains("[Console]::In.ReadLine()", StringComparison.Ordinal),
+        "embedded converter does not wait for the GUI selection over redirected standard input");
+    True(script.Contains("Resolve-MusicBrainzReleaseIndex", StringComparison.Ordinal),
+        "embedded converter does not validate forced release indexes");
+    True(script.Contains("$_.Exception.ParamName -ceq 'ReleaseIndex'", StringComparison.Ordinal),
+        "embedded converter fallback can swallow an invalid forced release index");
+}
+
+static void CheckMusicBrainzUserAgentMigration()
+{
+    Equal(
+        ConversionOptions.DefaultMusicBrainzUserAgent,
+        ConversionOptions.NormalizeMusicBrainzUserAgent(
+            "BinToAudioWindows/2.7.0 (https://github.com/Gavin-LHX/cdrom-dump-tools)"),
+        "legacy built-in user agent was not upgraded");
+    Equal(
+        ConversionOptions.DefaultMusicBrainzUserAgent,
+        ConversionOptions.NormalizeMusicBrainzUserAgent(null),
+        "blank user agent did not use the current default");
+    Equal(
+        "MyCdRipper/1.0 (contact@example.com)",
+        ConversionOptions.NormalizeMusicBrainzUserAgent("  MyCdRipper/1.0 (contact@example.com)  "),
+        "custom user agent was not preserved");
+}
+
+static void CheckVersionConsistency()
+{
+    var script = System.Text.Encoding.UTF8.GetString(EmbeddedConverterScript.ReadEmbeddedBytesForChecks());
+    var embeddedVersions = System.Text.RegularExpressions.Regex
+        .Matches(script, @"BinToAudioWindows/(?<version>[0-9]+\.[0-9]+\.[0-9]+)")
+        .Select(match => match.Groups["version"].Value)
+        .Distinct(StringComparer.Ordinal)
+        .ToArray();
+    Equal(1, embeddedVersions.Length, "embedded script contains inconsistent component versions");
+    Equal(ConversionOptions.CurrentVersion, embeddedVersions[0], "embedded script version differs from GUI version");
+    True(
+        ConversionOptions.DefaultMusicBrainzUserAgent.Contains(
+            "/" + ConversionOptions.CurrentVersion + " ",
+            StringComparison.Ordinal),
+        "default MusicBrainz user agent differs from GUI version");
 }
 
 static void CheckArgumentListSpecialPaths()
@@ -101,6 +201,8 @@ static void CheckArgumentListSpecialPaths()
     Equal(options.MusicBrainzUserAgent, ValueAfter(arguments, "-MusicBrainzUserAgent"), "user agent changed");
     True(arguments.Contains("-File"), "pwsh must use -File");
     True(!startInfo.UseShellExecute, "shell execution must remain disabled");
+    Equal("utf-8", startInfo.StandardInputEncoding?.WebName, "GUI selection input is not UTF-8");
+    Equal(0, startInfo.StandardInputEncoding?.GetPreamble().Length ?? -1, "GUI selection input must not emit a BOM");
 }
 
 static void CheckAiEnvironmentMapping()
@@ -267,6 +369,8 @@ static void CheckWindowsPowerShellWrapper()
     Equal("-Command", arguments[^2], "Windows PowerShell must use a UTF-8 command wrapper");
     var command = arguments[^1];
 
+    True(command.Contains("[Console]::InputEncoding=[Text.UTF8Encoding]::new($false)", StringComparison.Ordinal),
+        "UTF-8 input setup missing");
     True(command.Contains("[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)", StringComparison.Ordinal),
         "UTF-8 output setup missing");
     True(command.Contains(" -BinPath 'C:\\Music\\O''Brien & 夜鹿 ヨルシカ\\disc.bin'", StringComparison.Ordinal),

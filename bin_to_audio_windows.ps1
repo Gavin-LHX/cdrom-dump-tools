@@ -40,7 +40,9 @@ param(
     [ValidateRange(0, 1000)]
     [int] $ReleaseIndex = 0,
 
-    [string] $MusicBrainzUserAgent = 'BinToAudioWindows/2.9.0 (https://github.com/Gavin-LHX/cdrom-dump-tools)'
+    [switch] $GuiReleaseSelection,
+
+    [string] $MusicBrainzUserAgent = 'BinToAudioWindows/2.10.0 (https://github.com/Gavin-LHX/cdrom-dump-tools)'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -76,6 +78,71 @@ function Wait-ForExitKey {
     catch {
         [void] (Read-Host 'Press Enter to exit')
     }
+}
+
+function Read-GuiReleaseSelection {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Collections.Generic.List[object]] $Candidates
+    )
+
+    $payloadItems = [System.Collections.Generic.List[object]]::new()
+    for ($index = 0; $index -lt $Candidates.Count; $index++) {
+        $candidateRelease = $Candidates[$index].Release
+        $candidateMedium = $Candidates[$index].Medium
+        $payloadItems.Add([ordered]@{
+            index      = $index + 1
+            artist     = [string] (Get-ArtistCreditText (Get-ObjectProperty -Object $candidateRelease -Name 'artist-credit'))
+            title      = [string] (Get-ObjectProperty -Object $candidateRelease -Name 'title')
+            date       = [string] (Get-ObjectProperty -Object $candidateRelease -Name 'date')
+            country    = [string] (Get-ObjectProperty -Object $candidateRelease -Name 'country')
+            disc       = [string] (Get-ObjectProperty -Object $candidateMedium -Name 'position')
+            release_id = [string] (Get-ObjectProperty -Object $candidateRelease -Name 'id')
+            barcode    = [string] (Get-ObjectProperty -Object $candidateRelease -Name 'barcode')
+        })
+    }
+
+    $payloadJson = ConvertTo-Json -InputObject @($payloadItems) -Depth 4 -Compress
+    $payloadBytes = [Text.Encoding]::UTF8.GetBytes($payloadJson)
+    $encodedPayload = [Convert]::ToBase64String($payloadBytes)
+    Write-Host "CDROM_DUMP_TOOLS_RELEASE_SELECTION_V1:$encodedPayload"
+
+    $answer = [Console]::In.ReadLine()
+    if ($null -eq $answer) {
+        throw 'The GUI closed release-selection input before choosing a MusicBrainz candidate.'
+    }
+
+    [int] $parsedIndex = 0
+    if (-not [int]::TryParse($answer.Trim(), [ref] $parsedIndex) -or
+        $parsedIndex -lt 1 -or
+        $parsedIndex -gt $Candidates.Count) {
+        throw "The GUI returned an invalid MusicBrainz release selection: $answer"
+    }
+    return $parsedIndex
+}
+
+function Resolve-MusicBrainzReleaseIndex {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateRange(0, 1000)]
+        [int] $RequestedIndex,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateRange(1, 1000)]
+        [int] $CandidateCount
+    )
+
+    if ($RequestedIndex -eq 0) {
+        return 1
+    }
+    if ($RequestedIndex -gt $CandidateCount) {
+        throw [ArgumentOutOfRangeException]::new(
+            'ReleaseIndex',
+            $RequestedIndex,
+            "MusicBrainz returned only $CandidateCount matching release candidate(s). Set -ReleaseIndex 0 to choose interactively."
+        )
+    }
+    return $RequestedIndex
 }
 
 function Import-DotEnvFile {
@@ -5226,12 +5293,12 @@ try {
          'Accept'     = 'application/json'
      }
      $netEaseHeaders = @{
-         'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.9.0'
+         'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.10.0'
          'Accept'     = 'application/json'
          'Referer'    = 'https://music.163.com/'
      }
      $qqMusicHeaders = @{
-         'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.9.0'
+         'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.10.0'
          'Accept'     = 'application/json, text/plain, */*'
          'Referer'    = 'https://y.qq.com/'
      }
@@ -5272,18 +5339,24 @@ try {
                 }
             }
 
+            if ($candidates.Count -gt 1000) {
+                Write-Warning "MusicBrainz returned $($candidates.Count) matching media; only the first 1000 candidates can be selected."
+                $limitedCandidates = [System.Collections.Generic.List[object]]::new()
+                foreach ($candidate in @($candidates | Select-Object -First 1000)) {
+                    $limitedCandidates.Add($candidate)
+                }
+                $candidates = $limitedCandidates
+            }
+
             if ($candidates.Count -eq 0) {
                 Write-Warning 'MusicBrainz did not return a release with a matching track count; safe fallback identification will be tried.'
             }
             else {
-                [int] $selectedIndex = 1
+                [int] $selectedIndex = Resolve-MusicBrainzReleaseIndex `
+                    -RequestedIndex $ReleaseIndex `
+                    -CandidateCount $candidates.Count
                 if ($ReleaseIndex -gt 0) {
-                    if ($ReleaseIndex -le $candidates.Count) {
-                        $selectedIndex = $ReleaseIndex
-                    }
-                    else {
-                        Write-Warning "ReleaseIndex $ReleaseIndex is out of range; selecting release 1."
-                    }
+                    Write-Host "Using forced MusicBrainz release candidate $selectedIndex of $($candidates.Count)."
                 }
                 elseif ($candidates.Count -gt 1) {
                     Write-Host 'Multiple MusicBrainz releases match this disc:'
@@ -5298,7 +5371,11 @@ try {
                         Write-Host ('  [{0}] {1} - {2} ({3}, {4}, disc {5})' -f ($index + 1), $candidateArtist, $candidateTitle, $candidateDate, $candidateCountry, $candidateDisc)
                     }
 
-                    if (-not [Console]::IsInputRedirected) {
+                    if ($GuiReleaseSelection) {
+                        Write-Host 'Waiting for the GUI to choose a MusicBrainz release...'
+                        $selectedIndex = Read-GuiReleaseSelection -Candidates $candidates
+                    }
+                    elseif (-not [Console]::IsInputRedirected) {
                         $answer = Read-Host 'Select release [1]'
                         if (-not [string]::IsNullOrWhiteSpace($answer)) {
                             [int] $parsedIndex = 0
@@ -5414,7 +5491,7 @@ try {
                 if (-not $NoNetEase) {
                     try {
                         $netEaseHeaders = @{
-                            'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.9.0'
+                            'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.10.0'
                             'Accept'     = 'application/json'
                             'Referer'    = 'https://music.163.com/'
                         }
@@ -5460,7 +5537,7 @@ try {
                 if (-not $NoQQMusic) {
                     try {
                         $qqMusicHeaders = @{
-                            'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.9.0'
+                            'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.10.0'
                             'Accept'     = 'application/json, text/plain, */*'
                             'Referer'    = 'https://y.qq.com/'
                         }
@@ -5799,6 +5876,10 @@ try {
             }
         }
         catch {
+            if ($_.Exception -is [ArgumentOutOfRangeException] -and
+                $_.Exception.ParamName -ceq 'ReleaseIndex') {
+                throw
+            }
             $metadataMatched = $false
             Write-Warning "MusicBrainz identification failed: $($_.Exception.Message)"
             Write-Warning 'Safe local-hint and duration-verified domestic fallbacks will be tried.'
@@ -6035,16 +6116,16 @@ try {
             Write-Host "Chinese lyrics translation fallback: $(@($lyricsTranslationSettings.Providers) -join ' -> ')"
         }
         $lyricsHeaders = @{
-            'User-Agent' = 'BinToAudioWindows/2.9.0 (https://github.com/Gavin-LHX/cdrom-dump-tools)'
+            'User-Agent' = 'BinToAudioWindows/2.10.0 (https://github.com/Gavin-LHX/cdrom-dump-tools)'
             'Accept'     = 'application/json'
         }
         $netEaseLyricsHeaders = @{
-            'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.9.0'
+            'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.10.0'
             'Accept'     = 'application/json'
             'Referer'    = 'https://music.163.com/'
         }
         $qqMusicLyricsHeaders = @{
-            'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.9.0'
+            'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.10.0'
             'Accept'     = 'application/json, text/plain, */*'
             'Referer'    = 'https://y.qq.com/'
             'Origin'     = 'https://y.qq.com'
@@ -6396,7 +6477,7 @@ try {
             $coverCandidates = [System.Collections.Generic.List[object]]::new()
             $coverCacheKey = $releaseId
             $imageHeaders = @{
-                'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.9.0'
+                'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.10.0'
                 'Accept'     = 'image/*,*/*;q=0.8'
             }
 

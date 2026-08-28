@@ -20,6 +20,7 @@ public static class ConverterCommand
     private static readonly HashSet<string> ScriptSwitchNames = new(StringComparer.Ordinal)
     {
         "-NoMetadata", "-NoCover", "-NoLyrics", "-NoNetEase", "-NoQQMusic", "-NoPause", "-VerifyAudio",
+        "-GuiReleaseSelection",
     };
     private static readonly HashSet<string> ScriptValueNames = new(StringComparer.Ordinal)
     {
@@ -114,6 +115,10 @@ public static class ConverterCommand
         AddSwitch(arguments, "-NoQQMusic", options.NoQQMusic);
         AddSwitch(arguments, "-NoPause", options.NoPause);
         AddSwitch(arguments, "-VerifyAudio", options.VerifyAudio);
+        AddSwitch(
+            arguments,
+            "-GuiReleaseSelection",
+            options.PromptForReleaseSelection && !options.NoMetadata && options.ReleaseIndex == 0);
 
         arguments.Add("-LyricsTranslationFallback");
         arguments.Add(options.LyricsTranslationFallback);
@@ -149,6 +154,7 @@ public static class ConverterCommand
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             RedirectStandardInput = true,
+            StandardInputEncoding = new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
             StandardOutputEncoding = System.Text.Encoding.UTF8,
             StandardErrorEncoding = System.Text.Encoding.UTF8,
             WorkingDirectory = Path.GetDirectoryName(Path.GetFullPath(scriptPath))!,
@@ -182,6 +188,7 @@ public static class ConverterCommand
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(scriptPath);
         var command = new System.Text.StringBuilder(
+            "[Console]::InputEncoding=[Text.UTF8Encoding]::new($false); " +
             "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); " +
             "$OutputEncoding=[Console]::OutputEncoding; & ");
         command.Append(QuotePowerShellLiteral(Path.GetFullPath(scriptPath)));
