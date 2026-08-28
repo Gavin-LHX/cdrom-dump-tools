@@ -10,12 +10,15 @@ CUSTOM_NAME=0
 READ_SPEED=""
 VERIFY_PASSES="${CDROM_VERIFY_PASSES:-1}"
 VERIFY_SPEED="${CDROM_VERIFY_SPEED:-4}"
+RELEASE_INDEX="${CDROM_RELEASE_INDEX:-0}"
 VERIFY_MISMATCH=0
 VERIFY_RESULT="SINGLE_PASS"
 EJECT_AFTER=0
 DRY_RUN=0
 METADATA_LOOKUP=1
+METADATA_SELECTION_FAILED=0
 WORK_DIR=""
+KEEP_WORK_DIR=0
 
 if [[ "${CDROM_NO_METADATA:-0}" == 1 ]]; then
   METADATA_LOOKUP=0
@@ -35,6 +38,7 @@ Options:
   -s, --speed SPEED         Limit the drive read speed
       --verify-passes 1|2   Read once, or read twice and compare (default: $VERIFY_PASSES)
       --verify-speed SPEED  Default speed for verification reads (default: ${VERIFY_SPEED}x)
+      --release-index N     Select displayed MusicBrainz release N (default: prompt)
       --no-metadata         Do not query album metadata or rename the folder
       --eject               Eject the disc after a successful dump
       --dry-run             Validate and show what would be done
@@ -42,7 +46,7 @@ Options:
 
 Environment variables:
   CDROM_DEVICE, CDROM_DUMP_DIR, CDROM_NO_METADATA,
-  CDROM_VERIFY_PASSES, CDROM_VERIFY_SPEED
+  CDROM_VERIFY_PASSES, CDROM_VERIFY_SPEED, CDROM_RELEASE_INDEX
 
 Example:
   $PROGRAM --verify-passes 2
@@ -61,6 +65,404 @@ warn() {
 need_value() {
   [[ $# -ge 2 && -n "$2" ]] || die "$1 requires a value"
 }
+
+prepare_musicbrainz_release_candidates() {
+  local metadata_path="$1"
+  local disc_id="$2"
+  local expected_tracks="$3"
+  local candidate_path="$4"
+
+  python3 - "$metadata_path" "$disc_id" "$expected_tracks" "$candidate_path" <<'PY'
+import json
+import os
+import re
+import sys
+import unicodedata
+
+metadata_path, disc_id, expected_tracks_text, candidate_path = sys.argv[1:5]
+expected_tracks = int(expected_tracks_text)
+with open(metadata_path, "r", encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+def clean_text(value):
+    text = "".join(
+        character if not unicodedata.category(character).startswith("C") else " "
+        for character in str(value or "")
+    )
+    return " ".join(text.split()).strip()[:500]
+
+def artist_credit_text(value):
+    if not isinstance(value, list):
+        return ""
+    pieces = []
+    for item in value:
+        if isinstance(item, str):
+            pieces.append(item)
+        elif isinstance(item, dict):
+            pieces.append(str(item.get("name") or "") + str(item.get("joinphrase") or ""))
+    return clean_text("".join(pieces))
+
+def medium_details(medium):
+    count = medium.get("track-count")
+    if count is None and isinstance(medium.get("tracks"), list):
+        count = len(medium["tracks"])
+    track_count_matches = count == expected_tracks
+    disc_id_matches = any(
+        isinstance(disc, dict) and disc.get("id") == disc_id
+        for disc in (medium.get("discs") or [])
+    )
+    score = 100 if track_count_matches else 0
+    if disc_id_matches:
+        score += 1000
+    raw_position = medium.get("position")
+    position = (
+        raw_position
+        if isinstance(raw_position, int) and not isinstance(raw_position, bool) and 1 <= raw_position <= 100
+        else None
+    )
+    return {
+        "score": score,
+        "track_count_matches": track_count_matches,
+        "disc_id_matches": disc_id_matches,
+        "position": position,
+        "format": clean_text(medium.get("format")),
+        "track_count": count,
+    }
+
+def safe_folder(artist, title, date):
+    year_match = re.match(r"^(\d{4})", date)
+    year = year_match.group(1) if year_match else ""
+    folder = f"{artist} - {title}" if artist else title
+    if year:
+        folder += f" ({year})"
+    folder += " [BIN-TOC]"
+    folder = re.sub(r'[\x00-\x1f<>:"/\\|?*]+', "_", folder)
+    folder = re.sub(r"\s+", " ", folder).strip(" .")
+    while len(folder.encode("utf-8")) > 220:
+        folder = folder[:-1].rstrip()
+    return folder
+
+candidates = []
+for source_index, release in enumerate(payload.get("releases") or []):
+    if not isinstance(release, dict):
+        continue
+    release_group = release.get("release-group") if isinstance(release.get("release-group"), dict) else {}
+    title = clean_text(release.get("title") or release_group.get("title"))
+    if not title:
+        continue
+    artist = artist_credit_text(release.get("artist-credit")) or artist_credit_text(release_group.get("artist-credit"))
+    date = clean_text(release.get("date") or release_group.get("first-release-date"))
+    media = [medium for medium in (release.get("media") or []) if isinstance(medium, dict)]
+    medium_candidates = [medium_details(medium) for medium in media]
+    matching_media = [medium for medium in medium_candidates if medium["track_count_matches"]]
+    if not matching_media:
+        continue
+    best_medium = max(
+        enumerate(matching_media),
+        key=lambda item: (item[1]["score"], -item[0]),
+    )[1]
+    score = best_medium["score"]
+    status = clean_text(release.get("status"))
+    if status.lower() == "official":
+        score += 20
+    if date:
+        score += 5
+    folder = safe_folder(artist, title, date)
+    if not folder or folder in {".", ".."}:
+        continue
+    candidates.append({
+        "score": score,
+        "source_index": source_index,
+        "release_id": clean_text(release.get("id")),
+        "title": title,
+        "artist": artist,
+        "date": date,
+        "country": clean_text(release.get("country")),
+        "status": status,
+        "barcode": clean_text(release.get("barcode")),
+        "medium_position": best_medium["position"],
+        "medium_format": best_medium["format"],
+        "track_count": best_medium["track_count"],
+        "disc_id_matches": best_medium["disc_id_matches"],
+        "folder": folder,
+    })
+
+if any(candidate["disc_id_matches"] for candidate in candidates):
+    candidates = [candidate for candidate in candidates if candidate["disc_id_matches"]]
+candidates.sort(key=lambda candidate: (
+    -candidate["score"],
+    candidate["release_id"] or "~",
+    candidate["artist"].casefold(),
+    candidate["title"].casefold(),
+    candidate["date"],
+    candidate["country"],
+    str(candidate["medium_position"] or ""),
+    candidate["source_index"],
+))
+unique_candidates = []
+seen_candidates = set()
+for candidate in candidates:
+    identity = candidate["release_id"] or (
+        candidate["artist"],
+        candidate["title"],
+        candidate["date"],
+        candidate["country"],
+        candidate["medium_position"],
+    )
+    if identity in seen_candidates:
+        continue
+    seen_candidates.add(identity)
+    unique_candidates.append(candidate)
+candidates = unique_candidates
+if not candidates:
+    raise SystemExit(1)
+if len(candidates) > 1000:
+    print(
+        f"Warning: MusicBrainz returned {len(candidates)} candidates; only the first 1000 will be selectable.",
+        file=sys.stderr,
+    )
+    candidates = candidates[:1000]
+
+temporary_path = candidate_path + ".tmp"
+with open(temporary_path, "w", encoding="utf-8", newline="\n") as handle:
+    json.dump(candidates, handle, ensure_ascii=False, indent=2)
+    handle.write("\n")
+os.replace(temporary_path, candidate_path)
+print(len(candidates))
+PY
+}
+
+render_musicbrainz_release_candidates() {
+  local candidate_path="$1"
+
+  python3 - "$candidate_path" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    candidates = json.load(handle)
+
+print("Multiple MusicBrainz releases match this disc:")
+for index, candidate in enumerate(candidates, start=1):
+    artist = candidate.get("artist") or "Unknown artist"
+    title = candidate.get("title") or "Untitled"
+    date = candidate.get("date") or "unknown date"
+    country = candidate.get("country") or "unknown region"
+    position = candidate.get("medium_position")
+    disc = f"disc {position}" if position not in (None, "") else "disc ?"
+    medium_format = candidate.get("medium_format") or "unknown medium"
+    status = candidate.get("status") or "unknown status"
+    release_id = candidate.get("release_id") or "no MBID"
+    print(f"  [{index}] {artist} - {title} | {date} | {country} | {disc}, {medium_format} | {status} | {release_id}")
+PY
+}
+
+choose_musicbrainz_release_index() {
+  local candidate_path="$1"
+  local candidate_count="$2"
+  local requested_index="$3"
+  local tty_input="${4:-/dev/tty}"
+  local tty_output="${5:-/dev/tty}"
+  local selection_input_fd selection_output_fd answer selected
+
+  MUSICBRAINZ_SELECTED_INDEX=""
+
+  [[ "$candidate_count" =~ ^([1-9][0-9]{0,2}|1000)$ ]] || {
+    warn 'MusicBrainz returned no selectable releases'
+    return 1
+  }
+  [[ "$requested_index" =~ ^(0|[1-9][0-9]{0,2}|1000)$ ]] || {
+    warn "release index must be an integer from 0 through 1000: $requested_index"
+    return 2
+  }
+
+  if ((10#$requested_index > 0)); then
+    if ((10#$requested_index > 10#$candidate_count)); then
+      warn "release index $requested_index is outside the available range 1..$candidate_count; keeping the timestamp folder"
+      return 2
+    fi
+    if ((10#$candidate_count > 1)); then
+      render_musicbrainz_release_candidates "$candidate_path" >&2
+    fi
+    printf 'MusicBrainz release %d/%d selected by --release-index.\n' \
+      "$((10#$requested_index))" "$((10#$candidate_count))" >&2
+    MUSICBRAINZ_SELECTED_INDEX="$((10#$requested_index))"
+    return 0
+  fi
+
+  if ((10#$candidate_count == 1)); then
+    MUSICBRAINZ_SELECTED_INDEX=1
+    return 0
+  fi
+
+  if [[ ! -r "$tty_input" || ! -w "$tty_output" ]] ||
+     ! { exec {selection_input_fd}<"$tty_input"; } 2>/dev/null; then
+    render_musicbrainz_release_candidates "$candidate_path" >&2
+    warn "multiple MusicBrainz releases match this disc, but no interactive terminal is available; keeping the timestamp folder. Use --release-index 1..$candidate_count or CDROM_RELEASE_INDEX for unattended runs"
+    return 1
+  fi
+  if ! { exec {selection_output_fd}>>"$tty_output"; } 2>/dev/null; then
+    exec {selection_input_fd}<&-
+    render_musicbrainz_release_candidates "$candidate_path" >&2
+    warn "multiple MusicBrainz releases match this disc, but no interactive terminal is available; keeping the timestamp folder. Use --release-index 1..$candidate_count or CDROM_RELEASE_INDEX for unattended runs"
+    return 1
+  fi
+  render_musicbrainz_release_candidates "$candidate_path" >&"$selection_output_fd"
+  while true; do
+    printf 'Select MusicBrainz release [1-%d], or q to keep the timestamp folder: ' \
+      "$((10#$candidate_count))" >&"$selection_output_fd"
+    if ! IFS= read -r answer <&"$selection_input_fd"; then
+      exec {selection_input_fd}<&-
+      exec {selection_output_fd}>&-
+      warn 'MusicBrainz release selection ended without a choice; keeping the timestamp folder'
+      return 1
+    fi
+    if [[ "$answer" =~ ^[[:space:]]*[qQ][[:space:]]*$ ]]; then
+      exec {selection_input_fd}<&-
+      exec {selection_output_fd}>&-
+      warn 'MusicBrainz release selection skipped; keeping the timestamp folder'
+      return 1
+    fi
+    if [[ "$answer" =~ ^[[:space:]]*([1-9][0-9]{0,2}|1000)[[:space:]]*$ ]]; then
+      selected="$((10#${BASH_REMATCH[1]}))"
+      if ((selected >= 1 && selected <= 10#$candidate_count)); then
+        exec {selection_input_fd}<&-
+        exec {selection_output_fd}>&-
+        MUSICBRAINZ_SELECTED_INDEX="$selected"
+        return 0
+      fi
+    fi
+    printf 'Invalid selection. Enter a number from 1 to %d, or q.\n' \
+      "$((10#$candidate_count))" >&"$selection_output_fd"
+  done
+}
+
+resolve_musicbrainz_album_folder() {
+  local candidate_path="$1"
+  local selected_index="$2"
+
+  python3 - "$candidate_path" "$selected_index" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    candidates = json.load(handle)
+selected_index = int(sys.argv[2])
+if selected_index < 1 or selected_index > len(candidates):
+    raise SystemExit(1)
+folder = candidates[selected_index - 1].get("folder")
+if not folder:
+    raise SystemExit(1)
+print(folder)
+PY
+}
+
+write_musicbrainz_release_selection() {
+  local candidate_path="$1"
+  local selected_index="$2"
+
+  python3 - "$candidate_path" "$selected_index" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    candidates = json.load(handle)
+selected_index = int(sys.argv[2])
+candidate = candidates[selected_index - 1]
+print(f"MusicBrainz release candidates: {len(candidates)}")
+print(f"Selected release index: {selected_index}")
+print(f"Selected MusicBrainz Release ID: {candidate.get('release_id') or ''}")
+print(f"Selected release: {candidate.get('artist') or ''} - {candidate.get('title') or ''}")
+print(f"Selected release date/country: {candidate.get('date') or ''} / {candidate.get('country') or ''}")
+PY
+}
+
+move_directory_to_unique_path() {
+  local source_path="$1"
+  local base_destination="$2"
+  local candidate_destination suffix
+
+  [[ -d "$source_path" ]] || return 1
+  suffix=1
+  while true; do
+    if ((suffix == 1)); then
+      candidate_destination="$base_destination"
+    else
+      candidate_destination="$base_destination-$suffix"
+    fi
+    if [[ -e "$candidate_destination" ]]; then
+      ((suffix += 1))
+      continue
+    fi
+    if mv -T -- "$source_path" "$candidate_destination"; then
+      MOVED_DIRECTORY="$candidate_destination"
+      return 0
+    fi
+    # A concurrent process may have claimed the path between the existence
+    # check and rename. Retry only for that case; other failures are fatal.
+    if [[ -e "$candidate_destination" && -d "$source_path" ]]; then
+      ((suffix += 1))
+      continue
+    fi
+    return 1
+  done
+}
+
+cleanup() {
+  local work_parent work_base
+
+  if [[ -n "$WORK_DIR" && -d "$WORK_DIR" ]]; then
+    work_parent="$(dirname -- "$WORK_DIR")"
+    work_base="$(basename -- "$WORK_DIR")"
+    if [[ "$work_parent" == "$OUTPUT_DIR" && "$work_base" == ".${IMAGE_NAME}.partial."* ]]; then
+      if ((KEEP_WORK_DIR == 0)); then
+        rm -rf --one-file-system -- "$WORK_DIR"
+      else
+        warn "read data was preserved for recovery at $WORK_DIR"
+      fi
+    fi
+  fi
+}
+
+enable_work_dir_preservation() {
+  KEEP_WORK_DIR=1
+  trap 'warn "interrupted after a successful read; data remains at $WORK_DIR"; exit 130' INT
+  trap 'warn "terminated after a successful read; data remains at $WORK_DIR"; exit 143' TERM
+  trap 'warn "session ended after a successful read; data remains at $WORK_DIR"; exit 129' HUP
+}
+
+run_logged_read_command() {
+  local working_directory="$1"
+  local log_path="$2"
+  local preserve_on_success="$3"
+  local command_status tee_status
+  local -a pipeline_status
+  shift 3
+
+  if (
+      cd "$working_directory"
+      "$@"
+    ) 2>&1 | tee "$log_path"; then
+    pipeline_status=("${PIPESTATUS[@]}")
+  else
+    pipeline_status=("${PIPESTATUS[@]}")
+  fi
+  command_status="${pipeline_status[0]:-125}"
+  tee_status="${pipeline_status[1]:-125}"
+
+  if ((preserve_on_success && command_status == 0 && KEEP_WORK_DIR == 0)); then
+    enable_work_dir_preservation
+  fi
+  if ((command_status != 0)); then
+    return "$command_status"
+  fi
+  if ((tee_status != 0)); then
+    return "$tee_status"
+  fi
+  return 0
+}
+
+main() {
 
 while (($#)); do
   case "$1" in
@@ -95,6 +497,11 @@ while (($#)); do
       VERIFY_SPEED="$2"
       shift 2
       ;;
+    --release-index)
+      need_value "$@"
+      RELEASE_INDEX="$2"
+      shift 2
+      ;;
     --eject)
       EJECT_AFTER=1
       shift
@@ -117,7 +524,21 @@ while (($#)); do
   esac
 done
 
-for command_name in cdrdao sha256sum lsblk df mktemp realpath awk blockdev tee; do
+if [[ -z "$IMAGE_NAME" ]]; then
+  IMAGE_NAME="cdrom-$(date +%Y%m%d-%H%M%S)"
+fi
+[[ "$IMAGE_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] ||
+  die "name may contain only letters, numbers, dot, underscore, and hyphen"
+[[ "$READ_SPEED" =~ ^$|^[1-9][0-9]*$ ]] || die "speed must be a positive integer"
+[[ "$VERIFY_PASSES" =~ ^[12]$ ]] || die "verify passes must be 1 or 2"
+[[ "$VERIFY_SPEED" =~ ^[1-9][0-9]*$ ]] || die "verify speed must be a positive integer"
+[[ "$RELEASE_INDEX" =~ ^(0|[1-9][0-9]{0,2}|1000)$ ]] ||
+  die "release index must be an integer from 0 through 1000"
+if ((10#$RELEASE_INDEX > 0)) && ((!METADATA_LOOKUP || CUSTOM_NAME)); then
+  die "--release-index requires metadata lookup and cannot be combined with --no-metadata or --name"
+fi
+
+for command_name in cdrdao sha256sum lsblk df mktemp realpath awk blockdev tee mv; do
   command -v "$command_name" >/dev/null 2>&1 ||
     die "required command not found: $command_name"
 done
@@ -136,15 +557,6 @@ if ! cdrdao disk-info --device "$DEVICE" >/dev/null 2>&1; then
   die "no readable CD is present in $DEVICE"
 fi
 
-if [[ -z "$IMAGE_NAME" ]]; then
-  IMAGE_NAME="cdrom-$(date +%Y%m%d-%H%M%S)"
-fi
-[[ "$IMAGE_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] ||
-  die "name may contain only letters, numbers, dot, underscore, and hyphen"
-[[ "$READ_SPEED" =~ ^$|^[1-9][0-9]*$ ]] || die "speed must be a positive integer"
-[[ "$VERIFY_PASSES" =~ ^[12]$ ]] || die "verify passes must be 1 or 2"
-[[ "$VERIFY_SPEED" =~ ^[1-9][0-9]*$ ]] || die "verify speed must be a positive integer"
-
 FIRST_PASS_SPEED="$READ_SPEED"
 SECOND_PASS_SPEED=""
 if ((VERIFY_PASSES == 2)); then
@@ -162,6 +574,11 @@ if ((DRY_RUN)); then
   printf 'Destination: %s/%s\n' "$OUTPUT_DIR" "$IMAGE_NAME"
   if ((METADATA_LOOKUP && !CUSTOM_NAME)); then
     printf 'Folder name: album metadata when available; timestamp fallback\n'
+    if ((10#$RELEASE_INDEX > 0)); then
+      printf 'Release:    MusicBrainz candidate %d\n' "$((10#$RELEASE_INDEX))"
+    else
+      printf 'Release:    prompt if multiple MusicBrainz candidates match\n'
+    fi
   fi
   printf 'Format:      BIN/TOC (raw sectors, paranoia mode 3)\n'
   if ((VERIFY_PASSES == 2)); then
@@ -198,18 +615,10 @@ fi
 
 WORK_DIR="$(mktemp -d --tmpdir="$OUTPUT_DIR" ".${IMAGE_NAME}.partial.XXXXXX")"
 
-cleanup() {
-  if [[ -n "$WORK_DIR" && -d "$WORK_DIR" ]]; then
-    work_parent="$(dirname -- "$WORK_DIR")"
-    work_base="$(basename -- "$WORK_DIR")"
-    if [[ "$work_parent" == "$OUTPUT_DIR" && "$work_base" == ".${IMAGE_NAME}.partial."* ]]; then
-      rm -rf --one-file-system -- "$WORK_DIR"
-    fi
-  fi
-}
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 declare -a PASS_BIN_HASH=()
 declare -a PASS_TOC_HASH=()
@@ -237,12 +646,13 @@ read_pass() {
   mkdir -- "$pass_dir"
   printf 'Reading pass %d/%d from %s at %s ...\n' \
     "$pass_number" "$VERIFY_PASSES" "$DEVICE" "${PASS_SPEED[$pass_number]}"
-  (
-    cd "$pass_dir"
+  run_logged_read_command \
+    "$pass_dir" \
+    "$pass_dir/cdrdao.log" \
+    "$((pass_number == 1))" \
     cdrdao "${read_options[@]}" \
       --datafile "$IMAGE_NAME.bin" \
       "$IMAGE_NAME.toc"
-  ) 2>&1 | tee "$pass_dir/cdrdao.log"
 
   PASS_BIN_HASH[pass_number]="$(sha256sum -- "$pass_dir/$IMAGE_NAME.bin" | awk '{ print $1 }')"
   PASS_TOC_HASH[pass_number]="$(sha256sum -- "$pass_dir/$IMAGE_NAME.toc" | awk '{ print $1 }')"
@@ -328,11 +738,30 @@ cdrdao disk-info --device "$DEVICE" > "$WORK_DIR/disc-info.txt" 2>&1 || true
   sha256sum -- "${checksum_paths[@]}" > SHA256SUMS
 )
 
+# The raw image and verification artifacts are complete at this point. Persist
+# them before any optional network lookup or interactive release selection so
+# Ctrl+C, SSH disconnects, and metadata failures cannot delete a finished read.
+KEEP_WORK_DIR=1
+base_persisted_dir="$OUTPUT_DIR/$IMAGE_NAME"
+move_directory_to_unique_path "$WORK_DIR" "$base_persisted_dir" ||
+  die "could not rename the completed image; it remains at $WORK_DIR"
+PERSISTED_DIR="$MOVED_DIRECTORY"
+if ((CUSTOM_NAME)) && [[ "$PERSISTED_DIR" != "$base_persisted_dir" ]]; then
+  warn "the requested destination appeared while the disc was being read; preserving this dump as $PERSISTED_DIR"
+fi
+WORK_DIR="$PERSISTED_DIR"
+trap 'warn "interrupted after the completed image was preserved at $WORK_DIR"; exit 130' INT
+trap 'warn "terminated after the completed image was preserved at $WORK_DIR"; exit 143' TERM
+trap 'warn "session ended after the completed image was preserved at $WORK_DIR"; exit 129' HUP
+
 lookup_album_folder() {
   local toc_path="$1"
   local bin_path="$2"
   local cache_dir cache_file cache_age disc_info disc_id toc_encoded track_count
   local metadata_json metadata_tmp metadata_source base_url lookup_url album_folder
+  local candidate_json candidate_count selected_release_index selection_metadata selection_status
+
+  RESOLVED_ALBUM_FOLDER=""
 
   command -v python3 >/dev/null 2>&1 || {
     warn 'python3 is unavailable; using the timestamp folder name'
@@ -434,7 +863,7 @@ PY
       if curl --silent --show-error --fail --location \
           --connect-timeout 8 --max-time 35 --retry 2 --retry-delay 2 --retry-all-errors \
           --header 'Accept: application/json' \
-          --user-agent 'dump-cdrom/2.2 (https://github.com/Gavin-LHX/cdrom-dump-tools)' \
+          --user-agent 'dump-cdrom/2.3 (https://github.com/Gavin-LHX/cdrom-dump-tools)' \
           --output "$metadata_tmp" "$lookup_url" &&
          python3 - "$metadata_tmp" <<'PY'
 import json
@@ -470,78 +899,39 @@ PY
     return 1
   }
 
-  album_folder="$(python3 - "$metadata_json" "$disc_id" "$track_count" <<'PY'
-import json
-import re
-import sys
+  candidate_json="$WORK_DIR/musicbrainz-release-candidates.json"
+  candidate_count="$(prepare_musicbrainz_release_candidates \
+    "$metadata_json" "$disc_id" "$track_count" "$candidate_json")" || {
+    warn 'metadata was returned but no release has a medium with the expected track count; keeping the timestamp folder'
+    return 1
+  }
+  [[ "$candidate_count" =~ ^[1-9][0-9]*$ ]] || {
+    warn 'metadata was returned but no selectable MusicBrainz release was resolved; keeping the timestamp folder'
+    return 1
+  }
 
-metadata_path, disc_id, expected_tracks = sys.argv[1], sys.argv[2], int(sys.argv[3])
-with open(metadata_path, "r", encoding="utf-8") as handle:
-    payload = json.load(handle)
+  if choose_musicbrainz_release_index \
+      "$candidate_json" "$candidate_count" "$RELEASE_INDEX"; then
+    selected_release_index="$MUSICBRAINZ_SELECTED_INDEX"
+  else
+    selection_status=$?
+    {
+      printf 'MusicBrainz Disc ID: %s\n' "$disc_id"
+      printf 'Metadata source: %s\n' "$metadata_source"
+      printf 'MusicBrainz release candidates: %s\n' "$candidate_count"
+      printf 'Release selection: unresolved; timestamp folder retained\n'
+    } >> "$WORK_DIR/dump-metadata.txt"
+    return "$selection_status"
+  fi
 
-def artist_credit_text(value):
-    if not isinstance(value, list):
-        return ""
-    pieces = []
-    for item in value:
-        if isinstance(item, str):
-            pieces.append(item)
-        elif isinstance(item, dict):
-            pieces.append(str(item.get("name") or "") + str(item.get("joinphrase") or ""))
-    return "".join(pieces).strip()
-
-def medium_score(medium):
-    score = 0
-    count = medium.get("track-count")
-    if count is None and isinstance(medium.get("tracks"), list):
-        count = len(medium["tracks"])
-    if count == expected_tracks:
-        score += 100
-    for disc in medium.get("discs") or []:
-        if isinstance(disc, dict) and disc.get("id") == disc_id:
-            score += 1000
-    return score
-
-candidates = []
-for index, release in enumerate(payload.get("releases") or []):
-    if not isinstance(release, dict):
-        continue
-    media = release.get("media") or []
-    best_medium = max((medium_score(m) for m in media if isinstance(m, dict)), default=0)
-    score = best_medium
-    if str(release.get("status") or "").lower() == "official":
-        score += 20
-    if release.get("date"):
-        score += 5
-    candidates.append((score, -index, release))
-
-if not candidates:
-    raise SystemExit(1)
-
-release = max(candidates, key=lambda item: (item[0], item[1]))[2]
-release_group = release.get("release-group") if isinstance(release.get("release-group"), dict) else {}
-title = str(release.get("title") or release_group.get("title") or "").strip()
-artist = artist_credit_text(release.get("artist-credit")) or artist_credit_text(release_group.get("artist-credit"))
-date = str(release.get("date") or release_group.get("first-release-date") or "")
-year_match = re.match(r"^(\d{4})", date)
-year = year_match.group(1) if year_match else ""
-if not title:
-    raise SystemExit(1)
-
-folder = f"{artist} - {title}" if artist else title
-if year:
-    folder += f" ({year})"
-folder += " [BIN-TOC]"
-folder = re.sub(r'[\x00-\x1f<>:"/\\|?*]+', "_", folder)
-folder = re.sub(r"\s+", " ", folder).strip(" .")
-while len(folder.encode("utf-8")) > 220:
-    folder = folder[:-1].rstrip()
-if not folder or folder in {".", ".."}:
-    raise SystemExit(1)
-print(folder)
-PY
-)" || {
-    warn 'metadata was returned but no matching album could be resolved; using the timestamp folder name'
+  album_folder="$(resolve_musicbrainz_album_folder \
+    "$candidate_json" "$selected_release_index")" || {
+    warn 'the selected MusicBrainz release could not produce a safe folder name; keeping the timestamp folder'
+    return 1
+  }
+  selection_metadata="$(write_musicbrainz_release_selection \
+    "$candidate_json" "$selected_release_index")" || {
+    warn 'the selected MusicBrainz release could not be recorded; keeping the timestamp folder'
     return 1
   }
 
@@ -549,34 +939,33 @@ PY
   {
     printf 'MusicBrainz Disc ID: %s\n' "$disc_id"
     printf 'Metadata source: %s\n' "$metadata_source"
+    printf '%s\n' "$selection_metadata"
     printf 'Resolved folder: %s\n' "$album_folder"
   } >> "$WORK_DIR/dump-metadata.txt"
   printf 'Album metadata: %s\n' "$metadata_source" >&2
-  printf '%s\n' "$album_folder"
+  RESOLVED_ALBUM_FOLDER="$album_folder"
 }
 
 FINAL_NAME="$IMAGE_NAME"
 if ((METADATA_LOOKUP && !CUSTOM_NAME)); then
-  if resolved_folder="$(lookup_album_folder "$WORK_DIR/$IMAGE_NAME.toc" "$WORK_DIR/$IMAGE_NAME.bin")"; then
-    FINAL_NAME="$resolved_folder"
+  if lookup_album_folder "$WORK_DIR/$IMAGE_NAME.toc" "$WORK_DIR/$IMAGE_NAME.bin"; then
+    FINAL_NAME="$RESOLVED_ALBUM_FOLDER"
+  elif ((10#$RELEASE_INDEX > 0)); then
+    METADATA_SELECTION_FAILED=1
   fi
 fi
 
-FINAL_DIR="$OUTPUT_DIR/$FINAL_NAME"
-if [[ -e "$FINAL_DIR" ]]; then
-  if ((CUSTOM_NAME)); then
-    die "destination already exists: $FINAL_DIR"
+FINAL_DIR="$WORK_DIR"
+if [[ "$FINAL_NAME" != "$IMAGE_NAME" ]]; then
+  base_final_dir="$OUTPUT_DIR/$FINAL_NAME"
+  if move_directory_to_unique_path "$WORK_DIR" "$base_final_dir"; then
+    FINAL_DIR="$MOVED_DIRECTORY"
+    WORK_DIR="$FINAL_DIR"
+  else
+    FINAL_DIR="$WORK_DIR"
+    warn "album metadata was resolved, but the completed image could not be renamed; keeping $FINAL_DIR"
   fi
-  base_final_dir="$FINAL_DIR"
-  suffix=2
-  while [[ -e "$FINAL_DIR" ]]; do
-    FINAL_DIR="$base_final_dir-$suffix"
-    ((suffix += 1))
-  done
 fi
-
-mv -- "$WORK_DIR" "$FINAL_DIR"
-WORK_DIR=""
 
 if ((EUID == 0)) && [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != root ]]; then
   owner_group="$(id -gn "$SUDO_USER")"
@@ -592,9 +981,21 @@ printf 'TOC:        %s/%s.toc\n' "$FINAL_DIR" "$IMAGE_NAME"
 printf 'Checksums:  %s/SHA256SUMS\n' "$FINAL_DIR"
 printf 'Verify log: %s/verification-report.txt\n' "$FINAL_DIR"
 
+trap - INT TERM HUP
+WORK_DIR=""
+
 if ((VERIFY_MISMATCH)); then
   warn "verification mismatch: pass 1 is the canonical image in $FINAL_DIR"
   warn "pass 2 is preserved in $FINAL_DIR/verification-pass-2"
   warn 'inspect verification-report.txt and both cdrdao logs; exit status is 2'
   exit 2
+fi
+if ((METADATA_SELECTION_FAILED)); then
+  warn "the requested MusicBrainz release index was not applied; the completed image remains at $FINAL_DIR"
+  exit 3
+fi
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
 fi

@@ -27,11 +27,13 @@
 - 支持纯音频、数据和混合模式 CD 的 BIN/TOC 归档。
 - 生成 `SHA256SUMS`、`disc-info.txt` 和 `dump-metadata.txt`。
 - 根据 MusicBrainz Disc ID 查询专辑信息。
+- MusicBrainz 只有一个匹配发行版时自动采用；有多个匹配时在 `/dev/tty` 列出艺术家、专辑、日期、地区、碟号和 Release MBID，必须人工选择，不再静默采用第一个。
+- 无交互终端的计划任务不会等待或猜测：可用 `--release-index N`/`CDROM_RELEASE_INDEX` 明确选择，否则保留时间戳目录及 `musicbrainz-release-candidates.json` 候选清单。
 - 默认目录名：`艺术家 - 专辑 (年份) [BIN-TOC]`。
 - 元数据回退：30 天缓存 → MusicBrainz 主站 → MusicBrainz 镜像 → 过期缓存 → 时间戳目录。
 - 查询失败不会导致光盘读取失败。
+- 完成 BIN/TOC、校验和与读取报告后会先把镜像持久化到时间戳目录，再进行网络查询和候选选择；此时取消、SSH 断开或元数据失败都不会删除已经读完的镜像。
 - 同名目录自动追加 `-2`、`-3`，不会覆盖已有归档。
-- 在临时目录中读取，全部成功后才原子移动为最终目录。
 
 ### Windows 增强转换
 
@@ -151,6 +153,12 @@ sudo /dump_cdrom.sh --name my-disc
 # 禁用在线元数据查询
 sudo /dump_cdrom.sh --no-metadata
 
+# MusicBrainz 返回多个发行版时会在终端列出候选并等待选择
+sudo /dump_cdrom.sh
+
+# 无交互终端/计划任务中明确选择候选列表里的第 2 个发行版
+sudo /dump_cdrom.sh --release-index 2
+
 # 成功后弹出光盘
 sudo /dump_cdrom.sh --eject
 
@@ -163,10 +171,19 @@ sudo /dump_cdrom.sh --dry-run
 ```bash
 export CDROM_DEVICE=/dev/sr0
 export CDROM_DUMP_DIR=/data/cd-images
-export CDROM_NO_METADATA=1
 export CDROM_VERIFY_PASSES=2
 export CDROM_VERIFY_SPEED=4
+export CDROM_RELEASE_INDEX=2
 ```
+
+如需禁用元数据查询，应同时清除发行版序号；两者不能组合：
+
+```bash
+unset CDROM_RELEASE_INDEX
+export CDROM_NO_METADATA=1
+```
+
+`--release-index` 是候选列表中稳定排序后的 1-based 序号。若序号越界、用户输入 `q`、输入结束或运行环境没有 `/dev/tty`，脚本会保留已经完成的时间戳目录并在 `dump-metadata.txt` 标记 `Release selection: unresolved`，不会自动选择第一个发行版。SSH 断开或收到 INT/TERM/HUP 时也不会删除已经成功读取的数据，但会通过终端警告而不保证来得及追加该元数据标记。无人值守任务明确给出 `--release-index` 但该发行版未能应用时，镜像仍会完整保留并以状态码 3 结束；若同时存在双遍读取不一致，校验失败状态码 2 优先。
 
 ## Linux：将 BIN/TOC 转换为音轨
 

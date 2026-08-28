@@ -76,9 +76,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bash -n dump_cdrom.sh bin_to_audio.sh
-          shellcheck --external-sources --severity=warning dump_cdrom.sh bin_to_audio.sh
+          bash -n dump_cdrom.sh bin_to_audio.sh tests/dump_cdrom_release_selection.Tests.sh
+          shellcheck --external-sources --severity=warning \
+            dump_cdrom.sh \
+            bin_to_audio.sh \
+            tests/dump_cdrom_release_selection.Tests.sh
           bash dump_cdrom.sh --help >/dev/null
+
+      - name: Test MusicBrainz release selection for Linux dumps
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tests/dump_cdrom_release_selection.Tests.sh
 
       - name: Run Linux converter offline smoke test
         shell: bash
