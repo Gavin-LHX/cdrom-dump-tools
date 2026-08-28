@@ -97,9 +97,9 @@ GUI 应以普通用户身份运行；它会拒绝提升后的管理员令牌。�
 
 ### macOS 图形界面
 
-[`macos/`](macos/README.md) 提供原生 SwiftUI 前端，功能与 Windows GUI 的转换选项保持一致：BIN/TOC 与输出目录选择、FLAC/WAV、在线元数据、封面、歌词和中文翻译回退、国内标签源优先级、MusicBrainz 多发行版候选选择、逐轨无损校验、实时日志、进度、取消任务和输出目录定位。AI 服务配置保存在 macOS Keychain；Key 不进入命令行、日志、应用或 Release。
+[`macos/`](macos/README.md) 提供原生 SwiftUI 前端，功能与 Windows GUI 的转换选项保持一致：BIN/TOC 与输出目录选择、FLAC/WAV、在线元数据、封面、歌词和中文翻译回退、国内标签源优先级、MusicBrainz 多发行版候选选择、逐轨无损校验、实时日志、进度、取消任务和输出目录定位。macOS 26 及以上使用系统原生 Liquid Glass，macOS 14/15 自动回退到材质界面；“降低透明度”辅助功能同样受到尊重。AI 服务配置保存在 macOS Keychain；Key 不进入命令行、日志、应用或 Release。
 
-Apple Silicon 用户从 Release 下载一个 `cdrom-dump-tools-<版本>-macos-arm64-unsigned.dmg` 即可。DMG 中的 `.app` 已内置 arm64 PowerShell、LGPL FFmpeg 和转换脚本，不需要另装 Homebrew、PowerShell、FFmpeg 或 .NET。当前公开包使用 ad-hoc 签名且未经过 Apple notarization；首次启动如被 Gatekeeper 拦截，请在 Finder 中右键应用并选择“打开”。构建依赖、隐私说明和验证方式见 [macOS 中文说明](macos/README.md)。
+Release 同时提供两份原生、彼此独立的 macOS 安装包：Apple Silicon 使用 `cdrom-dump-tools-<版本>-macos-arm64-unsigned.dmg`，Intel Mac 使用 `cdrom-dump-tools-<版本>-macos-x64-unsigned.dmg`。它们不是 Universal 合并包；请按处理器下载对应版本，Apple Silicon 用户无需也不应为了运行 Intel 版而安装 Rosetta。每份 DMG 都内置同架构的 PowerShell、LGPL FFmpeg 和转换脚本，不需要另装 Homebrew、PowerShell、FFmpeg 或 .NET。两版最低均为 macOS 14；macOS 26 及以上使用原生 Liquid Glass，macOS 14/15 使用 Material 回退。当前公开包使用 ad-hoc 签名且未经过 Apple notarization；首次启动如被 Gatekeeper 拦截，请在 Finder 中右键应用并选择“打开”。构建依赖、隐私说明和验证方式见 [macOS 中文说明](macos/README.md)。
 
 ## Linux：安装与读取 CD
 
@@ -379,8 +379,8 @@ notepad .env
 
 仓库内置 GitHub Actions：
 
-- **CI**：Pull Request、推送到 `main`/`gui` 或手动运行时，在 Ubuntu 24.04 检查 Bash 语法、ShellCheck 和 Linux 转换器离线 dry-run；在 Windows Server 2025 构建并检查 WinForms GUI、PowerShell 7/5.1 与 `win-x64` 单 EXE；在 Apple Silicon macOS runner 编译 SwiftUI GUI、构建固定版本的 LGPL FFmpeg、嵌入固定版本的 arm64 PowerShell，并检查应用架构、自检、签名和 DMG 完整性。
-- **CD**：推送指向 `main` 历史的 SemVer 标签（例如 `v2.11.0`）后，先复用完整 CI，再发布 Windows 单 EXE、macOS arm64 单 DMG、Linux tar.gz、空白 `.env.example`、相关许可证/第三方通知和 `SHA256SUMS.txt`。Windows 用户只需下载 EXE；Apple Silicon Mac 用户只需下载 DMG。
+- **CI**：Pull Request、推送到 `main`/`gui` 或手动运行时，在 Ubuntu 24.04 检查 Bash 语法、ShellCheck 和 Linux 转换器离线 dry-run；在 Windows Server 2025 构建并检查 WinForms GUI、PowerShell 7/5.1 与 `win-x64` 单 EXE；在 Xcode 26/macOS 26 SDK 的 Apple Silicon `arm64` 与 Intel `x86_64` runner 上分别原生构建 SwiftUI GUI（部署目标仍为 macOS 14）、固定版本的 LGPL FFmpeg 和对应架构的官方 PowerShell，并分别检查 Mach-O 架构、内置工具启动、自检、离线 BIN/TOC 转换、ad-hoc 签名和 DMG 完整性。
+- **CD**：推送指向 `main` 历史的 SemVer 标签（例如 `v2.12.0`）后，先复用完整 CI，再发布 Windows 单 EXE、macOS arm64/x64 两份独立 DMG、Linux tar.gz、空白 `.env.example`、相关许可证/第三方通知和 `SHA256SUMS.txt`。Windows 用户下载 EXE；Mac 用户按处理器下载 `macos-arm64` 或 `macos-x64` DMG。
 - GitHub Actions 依赖固定到完整提交 SHA，并由 Dependabot 每周检查更新；CI 只拥有仓库读取权限，只有发布作业拥有 `contents: write`。
 
 发布新版本：
@@ -388,8 +388,8 @@ notepad .env
 ```bash
 git switch main
 git pull --ff-only
-git tag v2.11.0
-git push origin v2.11.0
+git tag v2.12.0
+git push origin v2.12.0
 ```
 
 Release 直接提供 Windows 单 EXE、macOS Apple Silicon 单 DMG 和空白 `.env.example`；Linux tar.gz 仍只包含 Linux 脚本与 README。macOS 应用内置的 PowerShell 与 LGPL FFmpeg 均随包附带许可证和来源说明；同页的 .NET 许可证资产不是 Windows 运行依赖。Release 绝不包含真实 `.env`、API Key、BIN、音频、缓存、歌词或本地生成的元数据。

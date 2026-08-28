@@ -426,26 +426,43 @@ jobs:
           }
 
   macos:
-    name: macOS 14+ arm64 native app
-    runs-on: macos-15
+    name: macOS 14+ ${{ matrix.asset_arch }} native app (Xcode 26)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-26
+            target_arch: arm64
+            asset_arch: arm64
+          - runner: macos-26-intel
+            target_arch: x86_64
+            asset_arch: x64
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      TARGET_ARCH: ${{ matrix.target_arch }}
+      ASSET_ARCH: ${{ matrix.asset_arch }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Verify pinned Apple Silicon build environment
+      - name: Verify pinned native macOS build environment
         shell: bash
         run: |
           set -euo pipefail
-          test "$(uname -m)" = arm64
+          test "$(uname -m)" = "$TARGET_ARCH"
+          test "$(sw_vers -productVersion | cut -d. -f1)" -ge 26
           sw_vers
           xcodebuild -version
           xcrun swiftc --version
+          test "$(xcodebuild -version | awk 'NR == 1 { print $2 }')" = 26.6
+          test "$(xcrun --sdk macosx --show-sdk-version | cut -d. -f1)" -ge 26
           bash -n macos/build_macos_app.sh
 
-      - name: Build and verify unsigned macOS arm64 DMG
+      - name: Build and verify unsigned macOS ${{ matrix.asset_arch }} DMG
         shell: bash
         env:
           BUILD_NUMBER: ${{ github.run_number }}
@@ -455,9 +472,9 @@ jobs:
           bash macos/build_macos_app.sh
 
           shopt -s nullglob
-          dmgs=("$OUTPUT_DIR"/cdrom-dump-tools-*-macos-arm64-unsigned.dmg)
+          dmgs=("$OUTPUT_DIR"/cdrom-dump-tools-*-macos-"$ASSET_ARCH"-unsigned.dmg)
           if ((${#dmgs[@]} != 1)); then
-            printf 'Expected exactly one unsigned macOS arm64 DMG, found %s.\n' "${#dmgs[@]}" >&2
+            printf 'Expected exactly one unsigned macOS %s DMG, found %s.\n' "$ASSET_ARCH" "${#dmgs[@]}" >&2
             exit 1
           fi
           test -s "${dmgs[0]}"

@@ -6,23 +6,25 @@ struct ContentView: View {
     @State private var selectedTab = 0
 
     var body: some View {
-        VStack(spacing: 0) {
-            HeaderView(model: model)
-            Divider()
-            TabView(selection: $selectedTab) {
-                ConversionOptionsView(model: model)
-                    .tabItem { Label("转换设置", systemImage: "opticaldisc") }
-                    .tag(0)
-                LogView(model: model)
-                    .tabItem { Label("运行日志", systemImage: "text.alignleft") }
-                    .tag(1)
-                CommandPreviewView(model: model)
-                    .tabItem { Label("命令预览", systemImage: "terminal") }
-                    .tag(2)
+        ZStack {
+            CdromGlassWindowBackground()
+            VStack(spacing: 10) {
+                HeaderView(model: model)
+                TabView(selection: $selectedTab) {
+                    ConversionOptionsView(model: model)
+                        .tabItem { Label("转换设置", systemImage: "opticaldisc") }
+                        .tag(0)
+                    LogView(model: model)
+                        .tabItem { Label("运行日志", systemImage: "text.alignleft") }
+                        .tag(1)
+                    CommandPreviewView(model: model)
+                        .tabItem { Label("命令预览", systemImage: "terminal") }
+                        .tag(2)
+                }
+                .padding(.horizontal, 4)
+                ActionBar(model: model, selectedTab: $selectedTab)
             }
-            .padding(.horizontal, 14)
-            Divider()
-            ActionBar(model: model, selectedTab: $selectedTab)
+            .padding(12)
         }
         .frame(minWidth: 900, minHeight: 700)
         .dropDestination(for: URL.self) { urls, _ in
@@ -62,6 +64,7 @@ private struct HeaderView: View {
             Image(systemName: "opticaldisc.fill")
                 .font(.system(size: 30))
                 .foregroundStyle(.tint)
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
                 Text("CD-ROM Dump Tools")
                     .font(.title2.weight(.semibold))
@@ -89,10 +92,14 @@ private struct HeaderView: View {
                     }
                 }
                 .frame(width: 230)
+                .accessibilityLabel("转换进度")
+                .accessibilityValue(model.statusText)
             }
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 13)
+        .cdromGlassSurface(cornerRadius: 20)
+        .accessibilityElement(children: .contain)
     }
 }
 
@@ -182,6 +189,7 @@ private struct ConversionOptionsView: View {
                             .frame(maxWidth: 270)
                             Spacer()
                             Button("配置模型与 API Key…") { model.showingAISettings = true }
+                                .cdromGlassButton()
                         }
                         Text(model.aiConfigurationSummary)
                             .font(.caption)
@@ -221,7 +229,8 @@ private struct ConversionOptionsView: View {
                     .padding(.top, 5)
                 }
             }
-            .padding(.vertical, 12)
+            .padding(.vertical, 10)
+            .padding(.horizontal, 2)
         }
         .disabled(model.isRunning)
     }
@@ -246,6 +255,7 @@ private struct PathRow: View {
                 }
                 .buttonStyle(.borderless)
                 .help("清空")
+                .accessibilityLabel("清空\(label)")
             }
         }
     }
@@ -253,6 +263,7 @@ private struct PathRow: View {
 
 private struct LogView: View {
     @ObservedObject var model: AppModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 8) {
@@ -279,9 +290,16 @@ private struct LogView: View {
                 }
                 .background(Color(nsColor: .textBackgroundColor))
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.25)))
+                .accessibilityLabel("运行日志")
                 .onChange(of: model.logs.count) { _, _ in
                     if model.followLatestLog {
-                        withAnimation(.easeOut(duration: 0.08)) { proxy.scrollTo("log-bottom", anchor: .bottom) }
+                        if reduceMotion {
+                            proxy.scrollTo("log-bottom", anchor: .bottom)
+                        } else {
+                            withAnimation(.easeOut(duration: 0.08)) {
+                                proxy.scrollTo("log-bottom", anchor: .bottom)
+                            }
+                        }
                     }
                 }
             }
@@ -312,6 +330,7 @@ private struct CommandPreviewView: View {
             }
             .background(Color(nsColor: .textBackgroundColor))
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.25)))
+            .accessibilityLabel("安全命令预览")
         }
         .padding(.vertical, 10)
     }
@@ -322,24 +341,27 @@ private struct ActionBar: View {
     @Binding var selectedTab: Int
 
     var body: some View {
-        HStack(spacing: 10) {
-            if model.isRunning {
-                Button("查看运行日志") { selectedTab = 1 }
+        CdromGlassEffectGroup(spacing: 10) {
+            HStack(spacing: 10) {
+                if model.isRunning {
+                    Button("查看运行日志") { selectedTab = 1 }
+                }
+                Spacer()
+                Button("打开输出目录", action: model.openLastOutput)
+                    .disabled(model.lastOutputDirectory == nil || model.isRunning)
+                Button("取消", action: model.cancelConversion)
+                    .disabled(!model.isRunning || model.cancellationRequested)
+                Button("开始转换") {
+                    selectedTab = 1
+                    model.startConversion()
+                }
+                .cdromGlassButton(prominent: true)
+                .keyboardShortcut(.defaultAction)
+                .disabled(model.isRunning)
             }
-            Spacer()
-            Button("打开输出目录", action: model.openLastOutput)
-                .disabled(model.lastOutputDirectory == nil || model.isRunning)
-            Button("取消", action: model.cancelConversion)
-                .disabled(!model.isRunning || model.cancellationRequested)
-            Button("开始转换") {
-                selectedTab = 1
-                model.startConversion()
-            }
-            .buttonStyle(.borderedProminent)
-            .keyboardShortcut(.defaultAction)
-            .disabled(model.isRunning)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 12)
+            .cdromGlassSurface(cornerRadius: 18)
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 12)
     }
 }

@@ -3,9 +3,8 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 
 readonly POWERSHELL_VERSION='7.6.5'
-readonly POWERSHELL_ARCHIVE="powershell-${POWERSHELL_VERSION}-osx-arm64.tar.gz"
-readonly POWERSHELL_URL="https://github.com/PowerShell/PowerShell/releases/download/v${POWERSHELL_VERSION}/${POWERSHELL_ARCHIVE}"
-readonly POWERSHELL_SHA256='8196d4b4e7c21b7f6df9d45687bb4e42dc8335f330b580d9eb15f3ef5042a8c3'
+readonly POWERSHELL_ARM64_SHA256='8196d4b4e7c21b7f6df9d45687bb4e42dc8335f330b580d9eb15f3ef5042a8c3'
+readonly POWERSHELL_X64_SHA256='3db1d177ab39511c1b6b73b05a1630a5db4e8dce22857ca76f14c5d98f2733fd'
 
 readonly FFMPEG_VERSION='8.1.2'
 readonly FFMPEG_ARCHIVE="ffmpeg-n${FFMPEG_VERSION}.tar.gz"
@@ -66,26 +65,27 @@ download_and_verify() {
     mv -- "$partial" "$destination"
 }
 
-assert_arm64_macho() {
+assert_target_macho() {
     local path="$1"
     local architecture=''
     file "$path" | grep -Fq 'Mach-O' || die "expected a Mach-O file: $path"
     architecture="$(lipo -archs "$path")"
-    [[ "$architecture" == 'arm64' ]] || die "expected arm64-only Mach-O, got '$architecture': $path"
+    [[ "$architecture" == "$target_arch" ]] ||
+        die "expected $target_arch-only Mach-O, got '$architecture': $path"
 }
 
-assert_macho_contains_arm64() {
+assert_macho_contains_target_arch() {
     local path="$1"
     local architectures=''
     file "$path" | grep -Fq 'Mach-O' || die "expected a Mach-O file: $path"
     architectures="$(lipo -archs "$path")"
     case " $architectures " in
-        *' arm64 '*) ;;
-        *) die "Mach-O does not contain an arm64 slice ('$architectures'): $path" ;;
+        *" $target_arch "*) ;;
+        *) die "Mach-O does not contain a $target_arch slice ('$architectures'): $path" ;;
     esac
 }
 
-assert_macho_tree_supports_arm64() {
+assert_macho_tree_supports_target_arch() {
     local root="$1"
     local candidate=''
     local found=0
@@ -93,7 +93,7 @@ assert_macho_tree_supports_arm64() {
     while IFS= read -r -d '' candidate; do
         if file "$candidate" | grep -Fq 'Mach-O'; then
             found=1
-            assert_macho_contains_arm64 "$candidate"
+            assert_macho_contains_target_arch "$candidate"
         fi
     done < <(find "$root" -type f -print0)
 
@@ -114,6 +114,24 @@ assert_only_system_dynamic_dependencies() {
                 ;;
         esac
     done < <(otool -L "$executable" | tail -n +2 | awk '{ print $1 }')
+}
+
+assert_macos_build_versions() {
+    local executable="$1"
+    local build_info=''
+    local minimum_version=''
+    local sdk_version=''
+    local sdk_major=''
+
+    build_info="$(xcrun vtool -show-build "$executable")"
+    minimum_version="$(awk '$1 == "minos" { print $2; exit }' <<<"$build_info")"
+    sdk_version="$(awk '$1 == "sdk" { print $2; exit }' <<<"$build_info")"
+    sdk_major="${sdk_version%%.*}"
+
+    [[ "$minimum_version" == "$MINIMUM_MACOS_VERSION" ]] ||
+        die "unexpected deployment target '$minimum_version' in $executable; expected $MINIMUM_MACOS_VERSION"
+    [[ "$sdk_major" =~ ^[0-9]+$ ]] || die "could not read the linked SDK version from $executable"
+    ((sdk_major >= 26)) || die "expected a macOS 26 SDK build, found SDK $sdk_version in $executable"
 }
 
 sign_macho_tree_ad_hoc() {
@@ -138,6 +156,7 @@ usage() {
 Usage: bash macos/build_macos_app.sh
 
 Environment variables:
+  TARGET_ARCH         Target architecture: arm64 or x86_64; defaults to the build host.
   VERSION             Release version; defaults to the Windows GUI project version.
   BUILD_NUMBER        Numeric CFBundleVersion; defaults to 1.
   BUNDLE_IDENTIFIER   Reverse-DNS bundle identifier.
@@ -165,9 +184,37 @@ readonly INFO_PLIST_TEMPLATE="$SCRIPT_DIRECTORY/Info.plist.in"
 readonly SWIFT_SOURCE_DIRECTORY="$SCRIPT_DIRECTORY/Sources/CdromDumpToolsMac"
 
 [[ "$(uname -s)" == 'Darwin' ]] || die 'this build must run on macOS'
-[[ "$(uname -m)" == 'arm64' ]] || die 'this build must run natively on Apple Silicon (arm64)'
 
-for command_name in awk codesign cmp curl dd file find grep hdiutil install lipo make otool plutil sed shasum swiftc tar xcrun; do
+host_arch="$(uname -m)"
+target_arch="${TARGET_ARCH:-$host_arch}"
+case "$target_arch" in
+    arm64)
+        package_arch='arm64'
+        powershell_asset_arch='arm64'
+        powershell_sha256="$POWERSHELL_ARM64_SHA256"
+        ;;
+    x86_64 | amd64)
+        target_arch='x86_64'
+        package_arch='x64'
+        powershell_asset_arch='x64'
+        powershell_sha256="$POWERSHELL_X64_SHA256"
+        ;;
+    *)
+        die "TARGET_ARCH must be arm64 or x86_64; got '$target_arch'"
+        ;;
+esac
+case "$host_arch" in
+    arm64 | x86_64) ;;
+    *) die "unsupported macOS build-host architecture: $host_arch" ;;
+esac
+[[ "$host_arch" == "$target_arch" ]] ||
+    die "TARGET_ARCH '$target_arch' must match the native build host '$host_arch' because target binaries are executed during verification"
+
+readonly host_arch target_arch package_arch powershell_asset_arch powershell_sha256
+readonly POWERSHELL_ARCHIVE="powershell-${POWERSHELL_VERSION}-osx-${powershell_asset_arch}.tar.gz"
+readonly POWERSHELL_URL="https://github.com/PowerShell/PowerShell/releases/download/v${POWERSHELL_VERSION}/${POWERSHELL_ARCHIVE}"
+
+for command_name in awk codesign cmp curl dd file find grep hdiutil install lipo make otool plutil sed shasum swiftc tar xcodebuild xcrun; do
     require_command "$command_name"
 done
 
@@ -175,6 +222,20 @@ done
 [[ -f "$CONVERTER_SCRIPT" ]] || die "converter script was not found: $CONVERTER_SCRIPT"
 [[ -f "$INFO_PLIST_TEMPLATE" ]] || die "Info.plist template was not found: $INFO_PLIST_TEMPLATE"
 [[ -d "$SWIFT_SOURCE_DIRECTORY" ]] || die "Swift source directory was not found: $SWIFT_SOURCE_DIRECTORY"
+
+xcode_details="$(xcodebuild -version 2>/dev/null)" ||
+    die 'a complete Xcode installation is required; Command Line Tools alone cannot build this SwiftUI app'
+xcode_version="$(awk 'NR == 1 { print $2 }' <<<"$xcode_details")"
+macos_sdk_version="$(xcrun --sdk macosx --show-sdk-version)"
+xcrun --find vtool >/dev/null 2>&1 || die 'vtool was not found in the selected Xcode toolchain'
+xcode_major="${xcode_version%%.*}"
+macos_sdk_major="${macos_sdk_version%%.*}"
+[[ "$xcode_major" =~ ^[0-9]+$ ]] || die "could not determine the Xcode major version: $xcode_version"
+[[ "$macos_sdk_major" =~ ^[0-9]+$ ]] || die "could not determine the macOS SDK major version: $macos_sdk_version"
+((xcode_major >= 26)) || die "Xcode 26 or newer is required for the native Liquid Glass build; found Xcode $xcode_version"
+((macos_sdk_major >= 26)) || die "macOS 26 SDK or newer is required for the native Liquid Glass build; found SDK $macos_sdk_version"
+printf 'Using Xcode %s with macOS SDK %s (target %s, deployment target %s).\n' \
+    "$xcode_version" "$macos_sdk_version" "$target_arch" "$MINIMUM_MACOS_VERSION"
 
 project_version="$(awk -F '[<>]' '/<Version>/{ print $3; exit }' "$GUI_PROJECT")"
 [[ -n "$project_version" ]] || die 'could not read <Version> from the Windows GUI project'
@@ -228,16 +289,18 @@ download_cache_directory="$(cd -- "$download_cache_directory" && pwd -P)"
 
 powershell_archive_path="$download_cache_directory/$POWERSHELL_ARCHIVE"
 ffmpeg_archive_path="$download_cache_directory/$FFMPEG_ARCHIVE"
-download_and_verify "$POWERSHELL_URL" "$POWERSHELL_SHA256" "$powershell_archive_path"
+download_and_verify "$POWERSHELL_URL" "$powershell_sha256" "$powershell_archive_path"
 download_and_verify "$FFMPEG_URL" "$FFMPEG_SHA256" "$ffmpeg_archive_path"
 
-printf 'Extracting PowerShell %s arm64...\n' "$POWERSHELL_VERSION"
+printf 'Extracting PowerShell %s for %s...\n' "$POWERSHELL_VERSION" "$target_arch"
 powershell_directory="$work_directory/powershell"
 mkdir -p -- "$powershell_directory"
 tar -xzf "$powershell_archive_path" -C "$powershell_directory"
 chmod 0755 "$powershell_directory/pwsh"
-assert_arm64_macho "$powershell_directory/pwsh"
-assert_macho_tree_supports_arm64 "$powershell_directory"
+assert_target_macho "$powershell_directory/pwsh"
+assert_macho_tree_supports_target_arch "$powershell_directory"
+# PowerShell, rather than Bash, must expand the expression passed to -Command.
+# shellcheck disable=SC2016
 powershell_reported_version="$(
     "$powershell_directory/pwsh" \
         -NoLogo \
@@ -248,7 +311,7 @@ powershell_reported_version="$(
 [[ "$powershell_reported_version" == "$POWERSHELL_VERSION" ]] ||
     die "bundled PowerShell reported '$powershell_reported_version', expected '$POWERSHELL_VERSION'"
 
-printf 'Building FFmpeg %s as an LGPL arm64 binary...\n' "$FFMPEG_VERSION"
+printf 'Building FFmpeg %s as an LGPL %s binary...\n' "$FFMPEG_VERSION" "$target_arch"
 ffmpeg_source_parent="$work_directory/ffmpeg-source"
 ffmpeg_prefix="$work_directory/ffmpeg-install"
 mkdir -p -- "$ffmpeg_source_parent" "$ffmpeg_prefix"
@@ -263,15 +326,15 @@ export MACOSX_DEPLOYMENT_TARGET="$MINIMUM_MACOS_VERSION"
 
 (
     cd -- "$ffmpeg_source_directory"
-    ./configure \
+    ffmpeg_configure_arguments=( \
         --prefix="$ffmpeg_prefix" \
-        --arch=arm64 \
+        --arch="$target_arch" \
         --target-os=darwin \
         --cc="$clang_path" \
         --host-cc="$clang_path" \
         --sysroot="$macos_sdk" \
-        --extra-cflags="-arch arm64 -mmacosx-version-min=${MINIMUM_MACOS_VERSION}" \
-        --extra-ldflags="-arch arm64 -mmacosx-version-min=${MINIMUM_MACOS_VERSION}" \
+        --extra-cflags="-arch $target_arch -mmacosx-version-min=${MINIMUM_MACOS_VERSION}" \
+        --extra-ldflags="-arch $target_arch -mmacosx-version-min=${MINIMUM_MACOS_VERSION}" \
         --host-cflags="-isysroot $macos_sdk" \
         --host-ldflags="-isysroot $macos_sdk" \
         --enable-static \
@@ -285,16 +348,35 @@ export MACOSX_DEPLOYMENT_TARGET="$MINIMUM_MACOS_VERSION"
         --disable-programs \
         --enable-ffmpeg \
         --enable-zlib
+    )
+    if [[ "$target_arch" == 'x86_64' ]]; then
+        # Keep Intel builds self-contained instead of depending on Homebrew NASM/Yasm.
+        ffmpeg_configure_arguments+=(--disable-x86asm)
+    fi
+    ./configure "${ffmpeg_configure_arguments[@]}"
     make -j "$cpu_count"
     make install
 )
 
 ffmpeg_executable="$ffmpeg_prefix/bin/ffmpeg"
 [[ -x "$ffmpeg_executable" ]] || die 'FFmpeg build did not produce an executable'
-assert_arm64_macho "$ffmpeg_executable"
+assert_target_macho "$ffmpeg_executable"
+assert_macos_build_versions "$ffmpeg_executable"
 
 ffmpeg_build_configuration="$("$ffmpeg_executable" -hide_banner -buildconf 2>&1)"
-for required_flag in --disable-gpl --disable-nonfree --disable-version3 --disable-autodetect --enable-static --disable-shared --enable-zlib; do
+required_ffmpeg_flags=(
+    --disable-gpl
+    --disable-nonfree
+    --disable-version3
+    --disable-autodetect
+    --enable-static
+    --disable-shared
+    --enable-zlib
+)
+if [[ "$target_arch" == 'x86_64' ]]; then
+    required_ffmpeg_flags+=(--disable-x86asm)
+fi
+for required_flag in "${required_ffmpeg_flags[@]}"; do
     grep -Fq -- "$required_flag" <<<"$ffmpeg_build_configuration" ||
         die "FFmpeg build configuration is missing $required_flag"
 done
@@ -324,27 +406,28 @@ if [[ -f "$powershell_directory/ThirdPartyNotices.txt" ]]; then
 fi
 
 cat >"$resources_directory/DISTRIBUTION-NOTICE.txt" <<NOTICE
-CD-ROM Dump Tools ${release_version} for macOS arm64
+CD-ROM Dump Tools ${release_version} for macOS ${target_arch}
 
 This build is ad-hoc signed and has NOT been signed with an Apple Developer ID.
 It has NOT been submitted to or accepted by Apple's notarization service.
 Gatekeeper may block an Internet-downloaded copy.
 
 Bundled components:
-- PowerShell ${POWERSHELL_VERSION} arm64 (official release archive)
-- FFmpeg ${FFMPEG_VERSION} arm64 (official source; GPL/nonfree/version3 disabled)
+- PowerShell ${POWERSHELL_VERSION} ${target_arch} (official release archive)
+- FFmpeg ${FFMPEG_VERSION} ${target_arch} (official source; GPL/nonfree/version3 disabled)
 NOTICE
 
 swift_sources=("$SWIFT_SOURCE_DIRECTORY"/*.swift)
 [[ -f "${swift_sources[0]}" ]] || die 'no Swift source files were found'
 
-printf 'Compiling native SwiftUI application for arm64 macOS %s+...\n' "$MINIMUM_MACOS_VERSION"
+printf 'Compiling native SwiftUI application for %s macOS %s+...\n' \
+    "$target_arch" "$MINIMUM_MACOS_VERSION"
 xcrun --sdk macosx swiftc \
     -parse-as-library \
     -swift-version 5 \
     -O \
     -sdk "$macos_sdk" \
-    -target "arm64-apple-macos${MINIMUM_MACOS_VERSION}" \
+    -target "${target_arch}-apple-macos${MINIMUM_MACOS_VERSION}" \
     -module-name CdromDumpToolsMac \
     -framework AppKit \
     -framework Security \
@@ -353,19 +436,22 @@ xcrun --sdk macosx swiftc \
     "${swift_sources[@]}" \
     -o "$macos_directory/$EXECUTABLE_NAME"
 
+assert_macos_build_versions "$macos_directory/$EXECUTABLE_NAME"
+
 sed \
     -e "s/@EXECUTABLE_NAME@/${EXECUTABLE_NAME}/g" \
     -e "s/@BUNDLE_IDENTIFIER@/${bundle_identifier}/g" \
+    -e "s/@TARGET_ARCH@/${target_arch}/g" \
     -e "s/@MARKETING_VERSION@/${marketing_version}/g" \
     -e "s/@RELEASE_VERSION@/${release_version}/g" \
     -e "s/@BUILD_NUMBER@/${build_number}/g" \
     "$INFO_PLIST_TEMPLATE" >"$contents_directory/Info.plist"
 
 plutil -lint "$contents_directory/Info.plist" >/dev/null
-assert_arm64_macho "$macos_directory/$EXECUTABLE_NAME"
+assert_target_macho "$macos_directory/$EXECUTABLE_NAME"
 assert_only_system_dynamic_dependencies "$macos_directory/$EXECUTABLE_NAME"
-assert_macho_tree_supports_arm64 "$runtime_directory/powershell"
-assert_arm64_macho "$runtime_directory/ffmpeg"
+assert_macho_tree_supports_target_arch "$runtime_directory/powershell"
+assert_target_macho "$runtime_directory/ffmpeg"
 cmp -s "$CONVERTER_SCRIPT" "$resources_directory/bin_to_audio.ps1" ||
     die 'the bundled converter differs from the repository source'
 
@@ -373,6 +459,7 @@ cmp -s "$CONVERTER_SCRIPT" "$resources_directory/bin_to_audio.ps1" ||
 [[ "$(plist_value CFBundleIdentifier "$contents_directory/Info.plist")" == "$bundle_identifier" ]] || die 'CFBundleIdentifier is incorrect'
 [[ "$(plist_value CFBundleShortVersionString "$contents_directory/Info.plist")" == "$marketing_version" ]] || die 'CFBundleShortVersionString is incorrect'
 [[ "$(plist_value CFBundleVersion "$contents_directory/Info.plist")" == "$build_number" ]] || die 'CFBundleVersion is incorrect'
+[[ "$(plist_value LSArchitecturePriority.0 "$contents_directory/Info.plist")" == "$target_arch" ]] || die 'LSArchitecturePriority is incorrect'
 [[ "$(plist_value LSMinimumSystemVersion "$contents_directory/Info.plist")" == "$MINIMUM_MACOS_VERSION" ]] || die 'LSMinimumSystemVersion is incorrect'
 [[ "$(plist_value CDROMDumpToolsReleaseVersion "$contents_directory/Info.plist")" == "$release_version" ]] || die 'CDROMDumpToolsReleaseVersion is incorrect'
 [[ "$(plist_value CDROMDumpToolsCodeSigning "$contents_directory/Info.plist")" == 'ad-hoc' ]] || die 'distribution signing metadata is incorrect'
@@ -391,12 +478,14 @@ verify_app_bundle() {
     local signing_details=''
 
     plutil -lint "$plist" >/dev/null
-    assert_arm64_macho "$executable"
-    assert_arm64_macho "$bundle/Contents/Resources/runtime/powershell/pwsh"
-    assert_arm64_macho "$bundle/Contents/Resources/runtime/ffmpeg"
+    assert_target_macho "$executable"
+    assert_target_macho "$bundle/Contents/Resources/runtime/powershell/pwsh"
+    assert_target_macho "$bundle/Contents/Resources/runtime/ffmpeg"
     codesign --verify --deep --strict --verbose=4 "$bundle"
     signing_details="$(codesign --display --verbose=4 "$bundle" 2>&1)"
     grep -Fq 'Signature=adhoc' <<<"$signing_details" || die "bundle is not ad-hoc signed: $bundle"
+    [[ "$(plist_value LSArchitecturePriority.0 "$plist")" == "$target_arch" ]] ||
+        die "bundle architecture metadata differs from target $target_arch: $bundle"
     [[ "$(plist_value CDROMDumpToolsNotarized "$plist")" == 'false' ]] || die "bundle incorrectly claims to be notarized: $bundle"
     "$executable" --self-test
 }
@@ -449,7 +538,7 @@ mkdir -p -- "$dmg_staging_directory"
 ln -s /Applications "$dmg_staging_directory/Applications"
 install -m 0644 "$SCRIPT_DIRECTORY/README.md" "$dmg_staging_directory/README-macOS.md"
 
-dmg_name="cdrom-dump-tools-${release_version}-macos-arm64-unsigned.dmg"
+dmg_name="cdrom-dump-tools-${release_version}-macos-${package_arch}-unsigned.dmg"
 temporary_dmg="$work_directory/$dmg_name"
 final_dmg="$output_directory/$dmg_name"
 rm -f -- "$final_dmg"
@@ -475,6 +564,6 @@ mount_directory=''
 
 mv -- "$temporary_dmg" "$final_dmg"
 final_sha256="$(sha256_file "$final_dmg")"
-printf 'Created unsigned, unnotarized macOS arm64 DMG:\n'
+printf 'Created unsigned, unnotarized macOS %s DMG:\n' "$target_arch"
 printf '  %s\n' "$final_dmg"
 printf '  SHA256 %s\n' "$final_sha256"

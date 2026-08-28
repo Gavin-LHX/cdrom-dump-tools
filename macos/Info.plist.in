@@ -24,7 +24,7 @@
     <string>public.app-category.utilities</string>
     <key>LSArchitecturePriority</key>
     <array>
-        <string>arm64</string>
+        <string>@TARGET_ARCH@</string>
     </array>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>

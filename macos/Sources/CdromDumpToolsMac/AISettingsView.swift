@@ -21,29 +21,32 @@ struct AISettingsView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("歌词翻译服务").font(.title2.weight(.semibold))
-                    Text("只在没有可靠中文歌词且启用相应回退时调用；音频不会上传。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+        ZStack {
+            CdromGlassWindowBackground()
+            VStack(spacing: 10) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("歌词翻译服务").font(.title2.weight(.semibold))
+                        Text("只在没有可靠中文歌词且启用相应回退时调用；音频不会上传。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
                 }
-                Spacer()
-            }
-            .padding(18)
-            Divider()
+                .padding(18)
+                .cdromGlassSurface(cornerRadius: 18)
+                .accessibilityElement(children: .combine)
 
-            Form {
-                Section("OpenAI / Chat Completions 兼容接口") {
-                    SecureField("API Key", text: $configuration.openAIAPIKey)
-                    TextField("Base URL", text: $configuration.openAIBaseURL)
-                    TextField("模型（例如 gpt-4.1-mini）", text: $configuration.openAIModel)
-                    TextField("Organization ID（可选）", text: $configuration.openAIOrganizationID)
-                    TextField("Project ID（可选）", text: $configuration.openAIProjectID)
-                }
+                Form {
+                    Section("OpenAI / Chat Completions 兼容接口") {
+                        SecureField("API Key", text: $configuration.openAIAPIKey)
+                        TextField("Base URL", text: $configuration.openAIBaseURL)
+                        TextField("模型（例如 gpt-4.1-mini）", text: $configuration.openAIModel)
+                        TextField("Organization ID（可选）", text: $configuration.openAIOrganizationID)
+                        TextField("Project ID（可选）", text: $configuration.openAIProjectID)
+                    }
 
-                Section("Anthropic / Messages 兼容接口") {
+                    Section("Anthropic / Messages 兼容接口") {
                     SecureField("API Key", text: $configuration.anthropicAPIKey)
                     TextField("Base URL", text: $configuration.anthropicBaseURL)
                     TextField("模型", text: $configuration.anthropicModel)
@@ -55,20 +58,20 @@ struct AISettingsView: View {
                         Stepper("", value: $configuration.anthropicMaxTokens, in: 256...32768, step: 256)
                             .labelsHidden()
                     }
-                }
+                    }
 
-                Section("Google Cloud Translation Basic v2") {
+                    Section("Google Cloud Translation Basic v2") {
                     SecureField("API Key", text: $configuration.googleAPIKey)
                     TextField("Base URL", text: $configuration.googleBaseURL)
-                }
+                    }
 
-                Section("Microsoft Azure Translator v3") {
+                    Section("Microsoft Azure Translator v3") {
                     SecureField("API Key", text: $configuration.microsoftAPIKey)
                     TextField("Base URL", text: $configuration.microsoftBaseURL)
                     TextField("Region（可选）", text: $configuration.microsoftRegion)
-                }
+                    }
 
-                Section("自定义 Prompt 与密钥保存") {
+                    Section("自定义 Prompt 与密钥保存") {
                     HStack {
                         TextField("UTF-8 Prompt 文件（留空使用内置 Prompt）", text: $configuration.promptFile)
                         Button("浏览…", action: choosePrompt)
@@ -85,20 +88,24 @@ struct AISettingsView: View {
                     Text("关闭时，Key 只保留在本次应用会话内；非密钥设置仍保存到 UserDefaults。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    }
+                }
+                .formStyle(.grouped)
+
+                CdromGlassEffectGroup(spacing: 10) {
+                    HStack {
+                        Spacer()
+                        Button("取消") { dismiss() }
+                            .keyboardShortcut(.cancelAction)
+                        Button("保存") { save() }
+                            .cdromGlassButton(prominent: true)
+                            .keyboardShortcut(.defaultAction)
+                    }
+                    .padding(16)
+                    .cdromGlassSurface(cornerRadius: 18)
                 }
             }
-            .formStyle(.grouped)
-
-            Divider()
-            HStack {
-                Spacer()
-                Button("取消") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Button("保存") { save() }
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
-            }
-            .padding(16)
+            .padding(14)
         }
         .frame(minWidth: 720, minHeight: 720)
         .interactiveDismissDisabled()
