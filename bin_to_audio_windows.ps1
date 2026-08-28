@@ -42,7 +42,7 @@ param(
 
     [switch] $GuiReleaseSelection,
 
-    [string] $MusicBrainzUserAgent = 'BinToAudioWindows/2.10.0 (https://github.com/Gavin-LHX/cdrom-dump-tools)'
+    [string] $MusicBrainzUserAgent = 'BinToAudioWindows/2.11.0 (https://github.com/Gavin-LHX/cdrom-dump-tools)'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -2077,7 +2077,7 @@ function Get-CoverArtArchiveCandidate {
     )
 
     $metadataUri = "https://coverartarchive.org/$EntityType/$EntityId/"
-    $cachePath = Join-Path $CacheRoot "CoverArtArchive\$EntityType-$EntityId.json"
+    $cachePath = Join-Path (Join-Path $CacheRoot 'CoverArtArchive') "$EntityType-$EntityId.json"
     $data = Invoke-JsonRequestWithRetry -Uri $metadataUri -Headers $Headers -CachePath $cachePath -MaximumAttempts 5 -SourceName "Cover Art Archive $EntityType" -MinimumIntervalMilliseconds 250
     $images = @(Get-ObjectProperty -Object $data -Name 'images')
     $frontImages = @($images | Where-Object { (Get-ObjectProperty -Object $_ -Name 'front') -eq $true })
@@ -5121,15 +5121,22 @@ try {
     $TocPath = Resolve-ExistingFile -Path $TocPath -Description 'TOC path'
 
     if ([string]::IsNullOrWhiteSpace($FfmpegPath)) {
-        $ffmpegCommand = Get-Command ffmpeg.exe -ErrorAction SilentlyContinue
+        $ffmpegCommand = Get-Command ffmpeg -ErrorAction SilentlyContinue
         if ($null -ne $ffmpegCommand) {
             $FfmpegPath = $ffmpegCommand.Source
         }
-        elseif (Test-Path -LiteralPath 'D:\Apps\FFmpeg-8.1.2\bin\ffmpeg.exe') {
-            $FfmpegPath = 'D:\Apps\FFmpeg-8.1.2\bin\ffmpeg.exe'
-        }
         else {
-            throw 'ffmpeg.exe was not found. Pass its location with -FfmpegPath.'
+            $knownFfmpegPaths = @(
+                'D:\Apps\FFmpeg-8.1.2\bin\ffmpeg.exe',
+                '/opt/homebrew/bin/ffmpeg',
+                '/usr/local/bin/ffmpeg'
+            )
+            $FfmpegPath = $knownFfmpegPaths |
+                Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+                Select-Object -First 1
+            if ([string]::IsNullOrWhiteSpace($FfmpegPath)) {
+                throw 'ffmpeg was not found. Pass its location with -FfmpegPath.'
+            }
         }
     }
     else {
@@ -5286,19 +5293,23 @@ try {
          genre_scores = @{}
      }
      $metadataEvidence = [System.Collections.Generic.List[object]]::new()
-     $cacheRoot = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'BinToAudioWindows'
+     $localApplicationData = [Environment]::GetFolderPath('LocalApplicationData')
+     if ([string]::IsNullOrWhiteSpace($localApplicationData)) {
+         $localApplicationData = Join-Path ([Environment]::GetFolderPath('UserProfile')) '.cache'
+     }
+     $cacheRoot = Join-Path $localApplicationData 'BinToAudioWindows'
      [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
      $headers = @{
          'User-Agent' = $MusicBrainzUserAgent
          'Accept'     = 'application/json'
      }
      $netEaseHeaders = @{
-         'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.10.0'
+         'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.11.0'
          'Accept'     = 'application/json'
          'Referer'    = 'https://music.163.com/'
      }
      $qqMusicHeaders = @{
-         'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.10.0'
+         'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.11.0'
          'Accept'     = 'application/json, text/plain, */*'
          'Referer'    = 'https://y.qq.com/'
      }
@@ -5316,7 +5327,7 @@ try {
 
             $encodedToc = [Uri]::EscapeDataString($discIdentity.Toc)
             $lookupUri = "https://musicbrainz.org/ws/2/discid/$($discIdentity.DiscId)?inc=recordings%2Bartist-credits%2Brelease-groups%2Bisrcs&toc=$encodedToc&cdstubs=no&fmt=json"
-            $metadataCachePath = Join-Path $cacheRoot "MusicBrainz\$($discIdentity.DiscId).json"
+             $metadataCachePath = Join-Path (Join-Path $cacheRoot 'MusicBrainz') "$($discIdentity.DiscId).json"
             try {
                 $lookup = Invoke-JsonRequestWithRetry -Uri $lookupUri -Headers $headers -CachePath $metadataCachePath -MaximumAttempts 5 -SourceName 'MusicBrainz' -MinimumIntervalMilliseconds 1100 -ThrottleKey 'musicbrainz-api'
             }
@@ -5450,7 +5461,7 @@ try {
                 if (-not [string]::IsNullOrWhiteSpace($releaseGroupId)) {
                     try {
                         $releaseGroupUri = "https://musicbrainz.org/ws/2/release-group/$releaseGroupId`?inc=aliases%2Bgenres&fmt=json"
-                        $releaseGroupCachePath = Join-Path $cacheRoot "MusicBrainz\release-group-v2-$releaseGroupId.json"
+                         $releaseGroupCachePath = Join-Path (Join-Path $cacheRoot 'MusicBrainz') "release-group-v2-$releaseGroupId.json"
                         try {
                             $releaseGroupData = Invoke-JsonRequestWithRetry -Uri $releaseGroupUri -Headers $headers -CachePath $releaseGroupCachePath -MaximumAttempts 5 -SourceName 'MusicBrainz release-group details' -MinimumIntervalMilliseconds 1100 -ThrottleKey 'musicbrainz-api'
                         }
@@ -5491,7 +5502,7 @@ try {
                 if (-not $NoNetEase) {
                     try {
                         $netEaseHeaders = @{
-                            'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.10.0'
+                            'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.11.0'
                             'Accept'     = 'application/json'
                             'Referer'    = 'https://music.163.com/'
                         }
@@ -5537,7 +5548,7 @@ try {
                 if (-not $NoQQMusic) {
                     try {
                         $qqMusicHeaders = @{
-                            'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.10.0'
+                            'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.11.0'
                             'Accept'     = 'application/json, text/plain, */*'
                             'Referer'    = 'https://y.qq.com/'
                         }
@@ -5738,7 +5749,7 @@ try {
                     $appleCountry = if ($releaseCountry -match '^[A-Za-z]{2}$') { $releaseCountry.ToUpperInvariant() } else { 'US' }
                     $appleLanguage = 'en_us'
                     $appleUri = "https://itunes.apple.com/search?term=$appleSearchTerm&media=music&entity=album&limit=25&country=$appleCountry&lang=$appleLanguage"
-                    $appleCachePath = Join-Path $cacheRoot "Apple-v3\$releaseId-$appleCountry-$appleLanguage.json"
+                     $appleCachePath = Join-Path (Join-Path $cacheRoot 'Apple-v3') "$releaseId-$appleCountry-$appleLanguage.json"
                     $appleData = Invoke-JsonRequestWithRetry -Uri $appleUri -Headers $headers -CachePath $appleCachePath -MaximumAttempts 5 -SourceName 'Apple iTunes Search' -MinimumIntervalMilliseconds 3100 -ThrottleKey 'apple-search-api'
 
                     $appleResultIndex = 0
@@ -5789,7 +5800,7 @@ try {
                             'User-Agent' = $MusicBrainzUserAgent
                             'Accept'     = 'application/sparql-results+json'
                         }
-                        $wikidataCachePath = Join-Path $cacheRoot "Wikidata-v2\$releaseGroupId.json"
+                         $wikidataCachePath = Join-Path (Join-Path $cacheRoot 'Wikidata-v2') "$releaseGroupId.json"
                         $wikidataData = Invoke-JsonRequestWithRetry -Uri $wikidataUri -Headers $wikidataHeaders -CachePath $wikidataCachePath -MaximumAttempts 3 -SourceName 'Wikidata'
                         $wikidataResults = Get-ObjectProperty -Object $wikidataData -Name 'results'
                         $wikidataBindings = @(Get-ObjectProperty -Object $wikidataResults -Name 'bindings')
@@ -6102,10 +6113,10 @@ try {
 
     $lyricsManifest = [System.Collections.Generic.List[object]]::new()
     if (-not $NoLyrics) {
-        $lyricsCacheRoot = Join-Path $cacheRoot 'Lyrics\LRCLIB-v2'
-        $netEaseLyricsCacheRoot = Join-Path $cacheRoot 'Lyrics\NetEase-v1'
-        $qqMusicLyricsCacheRoot = Join-Path $cacheRoot 'Lyrics\QQMusic-v1'
-        $translationLyricsCacheRoot = Join-Path $cacheRoot 'Lyrics\Translation-v2'
+        $lyricsCacheRoot = Join-Path (Join-Path $cacheRoot 'Lyrics') 'LRCLIB-v2'
+        $netEaseLyricsCacheRoot = Join-Path (Join-Path $cacheRoot 'Lyrics') 'NetEase-v1'
+        $qqMusicLyricsCacheRoot = Join-Path (Join-Path $cacheRoot 'Lyrics') 'QQMusic-v1'
+        $translationLyricsCacheRoot = Join-Path (Join-Path $cacheRoot 'Lyrics') 'Translation-v2'
         if ($lyricsTranslationSettings.Mode -eq 'None') {
             Write-Host 'Chinese lyrics machine-translation fallback: disabled'
         }
@@ -6116,16 +6127,16 @@ try {
             Write-Host "Chinese lyrics translation fallback: $(@($lyricsTranslationSettings.Providers) -join ' -> ')"
         }
         $lyricsHeaders = @{
-            'User-Agent' = 'BinToAudioWindows/2.10.0 (https://github.com/Gavin-LHX/cdrom-dump-tools)'
+            'User-Agent' = 'BinToAudioWindows/2.11.0 (https://github.com/Gavin-LHX/cdrom-dump-tools)'
             'Accept'     = 'application/json'
         }
         $netEaseLyricsHeaders = @{
-            'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.10.0'
+            'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.11.0'
             'Accept'     = 'application/json'
             'Referer'    = 'https://music.163.com/'
         }
         $qqMusicLyricsHeaders = @{
-            'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.10.0'
+            'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.11.0'
             'Accept'     = 'application/json, text/plain, */*'
             'Referer'    = 'https://y.qq.com/'
             'Origin'     = 'https://y.qq.com'
@@ -6477,7 +6488,7 @@ try {
             $coverCandidates = [System.Collections.Generic.List[object]]::new()
             $coverCacheKey = $releaseId
             $imageHeaders = @{
-                'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.10.0'
+                'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.11.0'
                 'Accept'     = 'image/*,*/*;q=0.8'
             }
 
@@ -6549,7 +6560,7 @@ try {
                 }
                 $deezerTerm = [Uri]::EscapeDataString("$albumArtist $($deezerSearchTitle[0])")
                 $deezerUri = "https://api.deezer.com/search/album?q=$deezerTerm&limit=25"
-                $deezerCachePath = Join-Path $cacheRoot "Deezer\$coverCacheKey.json"
+                $deezerCachePath = Join-Path (Join-Path $cacheRoot 'Deezer') "$coverCacheKey.json"
                 $deezerData = Invoke-JsonRequestWithRetry -Uri $deezerUri -Headers $headers -CachePath $deezerCachePath -MaximumAttempts 5 -SourceName 'Deezer album search' -MinimumIntervalMilliseconds 500
                 $bestDeezerResult = $null
                 $bestDeezerScore = 0
@@ -6605,8 +6616,8 @@ try {
             $coverCachePath = $null
             $coverCacheMetadataPath = $null
             if (-not [string]::IsNullOrWhiteSpace($coverCacheKey)) {
-                $coverCachePath = Join-Path $cacheRoot "Cover-v3\$coverCacheKey.jpg"
-                $coverCacheMetadataPath = Join-Path $cacheRoot "Cover-v3\$coverCacheKey.json"
+                $coverCachePath = Join-Path (Join-Path $cacheRoot 'Cover-v3') "$coverCacheKey.jpg"
+                $coverCacheMetadataPath = Join-Path (Join-Path $cacheRoot 'Cover-v3') "$coverCacheKey.json"
             }
 
             $usingCachedCover = $false

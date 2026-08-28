@@ -8,6 +8,8 @@
 !.env.example
 .metadata-cache/
 dist/
+*.dmg
+.DS_Store
 cover.jpg
 folder.jpg
 metadata.json

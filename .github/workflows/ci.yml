@@ -76,10 +76,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bash -n dump_cdrom.sh bin_to_audio.sh tests/dump_cdrom_release_selection.Tests.sh
+          bash -n dump_cdrom.sh bin_to_audio.sh macos/build_macos_app.sh tests/dump_cdrom_release_selection.Tests.sh
           shellcheck --external-sources --severity=warning \
             dump_cdrom.sh \
             bin_to_audio.sh \
+            macos/build_macos_app.sh \
             tests/dump_cdrom_release_selection.Tests.sh
           bash dump_cdrom.sh --help >/dev/null
 
@@ -423,3 +424,41 @@ jobs:
               $issues | Format-Table Severity, RuleName, Line, Column, Message -AutoSize
               throw "PSScriptAnalyzer found $($issues.Count) blocking issue(s)."
           }
+
+  macos:
+    name: macOS 14+ arm64 native app
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify pinned Apple Silicon build environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          sw_vers
+          xcodebuild -version
+          xcrun swiftc --version
+          bash -n macos/build_macos_app.sh
+
+      - name: Build and verify unsigned macOS arm64 DMG
+        shell: bash
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+          OUTPUT_DIR: ${{ runner.temp }}/macos-dist
+        run: |
+          set -euo pipefail
+          bash macos/build_macos_app.sh
+
+          shopt -s nullglob
+          dmgs=("$OUTPUT_DIR"/cdrom-dump-tools-*-macos-arm64-unsigned.dmg)
+          if ((${#dmgs[@]} != 1)); then
+            printf 'Expected exactly one unsigned macOS arm64 DMG, found %s.\n' "${#dmgs[@]}" >&2
+            exit 1
+          fi
+          test -s "${dmgs[0]}"
+          hdiutil verify "${dmgs[0]}"

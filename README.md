@@ -2,7 +2,7 @@
 
 一套用于完整读取 CD、保存 BIN/TOC 镜像，以及将 CD-DA 音轨转换为 FLAC/WAV 的脚本。
 
-项目同时提供 Linux 服务器端的光盘镜像脚本、Windows 本地增强转换脚本和 .NET 8 WinForms 图形界面。Windows 版本能够自动查询专辑与曲目信息、重命名文件、写入封面和标签，并获取同步歌词。
+项目同时提供 Linux 服务器端的光盘镜像脚本，以及 Windows/macOS 本地增强转换工具。Windows 使用 .NET 8 WinForms 单 EXE，macOS 使用原生 SwiftUI 应用；两者共用同一套 PowerShell 转换引擎，能够自动查询专辑与曲目信息、重命名文件、写入封面和标签，并获取同步歌词。
 
 ## 文件说明
 
@@ -10,10 +10,11 @@
 | --- | --- | --- |
 | `dump_cdrom.sh` | Linux | 从实体光驱读取完整 CD，生成 BIN/TOC、校验和及读取信息 |
 | `bin_to_audio.sh` | Linux | 将纯 CD-DA 的 BIN/TOC 拆分为基础 FLAC/WAV 音轨 |
-| `bin_to_audio_windows.ps1` | Windows | 增强转换器：拆轨、元数据、年份/流派比对、封面、歌词和自动命名 |
+| `bin_to_audio_windows.ps1` | Windows/macOS | 增强转换器：拆轨、元数据、年份/流派比对、封面、歌词和自动命名 |
 | `bin_to_audio_windows.cmd` | Windows | 拖放式启动器，默认调用 PowerShell 脚本转换为 FLAC |
 | [`gui/`](gui/README.md) | Windows | .NET 8 WinForms 前端：配置转换参数、显示实时日志、取消任务并打开最终输出目录 |
-| `.env.example` | Windows | 机器翻译回退的高级/命令行配置模板；GUI 也可直接填写，真实 `.env` 不应提交或分享 |
+| [`macos/`](macos/README.md) | macOS Apple Silicon | 原生 SwiftUI 前端：单个 DMG 分发，应用内置 PowerShell、FFmpeg 与转换脚本 |
+| `.env.example` | Windows/macOS | 机器翻译回退的高级/命令行配置模板；GUI 也可直接填写，真实 `.env` 不应提交或分享 |
 
 ## 功能概览
 
@@ -35,7 +36,7 @@
 - 完成 BIN/TOC、校验和与读取报告后会先把镜像持久化到时间戳目录，再进行网络查询和候选选择；此时取消、SSH 断开或元数据失败都不会删除已经读完的镜像。
 - 同名目录自动追加 `-2`、`-3`，不会覆盖已有归档。
 
-### Windows 增强转换
+### Windows/macOS 增强转换
 
 - 解析 `cdrdao` TOC，按字节边界拆分 CD-DA 音轨。
 - 使用 FFmpeg 输出无损 FLAC 或 WAV。
@@ -93,6 +94,12 @@ publish.cmd
 `build.cmd` 需要 .NET 8 SDK；`publish.cmd` 在 `gui\publish\win-x64\CdromDumpToolsGui.exe` 生成自包含单文件。该 EXE 不依赖外部 `.ps1` 或 .NET Runtime，可以单独移动；运行时仍会调用系统 PowerShell，并继续要求外部 FFmpeg。EXE 不内嵌 API Key 或真实 `.env`。完整依赖、输出目录语义、GUI/`.env` 密钥安全要求和发布方式见 [GUI 中文说明](gui/README.md)。
 
 GUI 应以普通用户身份运行；它会拒绝提升后的管理员令牌。公开 Release EXE 当前未做 Authenticode 签名，Windows 可能显示 SmartScreen 提示，请从项目 Release 下载并使用同页 `SHA256SUMS.txt` 校验文件。
+
+### macOS 图形界面
+
+[`macos/`](macos/README.md) 提供原生 SwiftUI 前端，功能与 Windows GUI 的转换选项保持一致：BIN/TOC 与输出目录选择、FLAC/WAV、在线元数据、封面、歌词和中文翻译回退、国内标签源优先级、MusicBrainz 多发行版候选选择、逐轨无损校验、实时日志、进度、取消任务和输出目录定位。AI 服务配置保存在 macOS Keychain；Key 不进入命令行、日志、应用或 Release。
+
+Apple Silicon 用户从 Release 下载一个 `cdrom-dump-tools-<版本>-macos-arm64-unsigned.dmg` 即可。DMG 中的 `.app` 已内置 arm64 PowerShell、LGPL FFmpeg 和转换脚本，不需要另装 Homebrew、PowerShell、FFmpeg 或 .NET。当前公开包使用 ad-hoc 签名且未经过 Apple notarization；首次启动如被 Gatekeeper 拦截，请在 Finder 中右键应用并选择“打开”。构建依赖、隐私说明和验证方式见 [macOS 中文说明](macos/README.md)。
 
 ## Linux：安装与读取 CD
 
@@ -366,14 +373,14 @@ notepad .env
 
 内置 AI Prompt 以“信”为最高优先级，再追求“达”和“雅”：不得为了押韵或文采改变事实、否定关系、人物、时态、视角和语气；同时要求译文自然简洁，尽量保留意象、节奏、俚语和双关。它把歌词与专辑信息明确视为数据而不是指令，只接受严格 JSON，并要求返回与原文完全一致的逐行 ID、顺序和数量。脚本据此在本地恢复 LRC 时间戳和生成双语 SRT。需要自行调整翻译风格时，可通过 `AI_TRANSLATION_PROMPT_FILE` 覆盖内置 Prompt。
 
-机器翻译会把待翻译的歌词行发送给所选 OpenAI-compatible、Anthropic-compatible、Google、Microsoft 或免 Key 网页服务；只有 AI 服务会额外收到用于消歧的曲名、艺人和专辑名，其余服务只接收歌词行。脚本不会上传 BIN、FLAC、WAV 或任何音频内容。正式 API 可能按请求、字符或 Token 收费，具体价格、配额、数据保留与隐私规则由服务商决定。Google GTX 与 Bing 网页翻译是未文档化的消费者端点，不需要 Key，但不提供稳定性、配额或隐私承诺，可能返回 429、验证码或改变格式；脚本会限速、不会对失败请求重试，并在遇到限流或挑战后于本次转换中熔断该服务，然后进入下一层。服务地址必须使用 HTTPS；仅 `localhost`/loopback 本机兼容服务可使用 HTTP，带凭据的请求不会自动跟随重定向。成功译文缓存在 `%LOCALAPPDATA%\BinToAudioWindows\Lyrics\Translation-v2`，缓存不包含 API Key 或 Bing 临时令牌，并绑定服务端点、API 格式/版本、模型、Prompt、歌曲上下文和原歌词；删除对应缓存可强制重新翻译。
+机器翻译会把待翻译的歌词行发送给所选 OpenAI-compatible、Anthropic-compatible、Google、Microsoft 或免 Key 网页服务；只有 AI 服务会额外收到用于消歧的曲名、艺人和专辑名，其余服务只接收歌词行。脚本不会上传 BIN、FLAC、WAV 或任何音频内容。正式 API 可能按请求、字符或 Token 收费，具体价格、配额、数据保留与隐私规则由服务商决定。Google GTX 与 Bing 网页翻译是未文档化的消费者端点，不需要 Key，但不提供稳定性、配额或隐私承诺，可能返回 429、验证码或改变格式；脚本会限速、不会对失败请求重试，并在遇到限流或挑战后于本次转换中熔断该服务，然后进入下一层。服务地址必须使用 HTTPS；仅 `localhost`/loopback 本机兼容服务可使用 HTTP，带凭据的请求不会自动跟随重定向。成功译文缓存在 Windows 的 `%LOCALAPPDATA%\BinToAudioWindows\Lyrics\Translation-v2` 或 macOS 的 `~/Library/Application Support/BinToAudioWindows/Lyrics/Translation-v2`，缓存不包含 API Key 或 Bing 临时令牌，并绑定服务端点、API 格式/版本、模型、Prompt、歌曲上下文和原歌词；删除对应缓存可强制重新翻译。
 
 ## 自动 CI/CD
 
 仓库内置 GitHub Actions：
 
-- **CI**：Pull Request、推送到 `main`/`gui` 或手动运行时，在 Ubuntu 24.04 检查 Bash 语法、ShellCheck 和 Linux 转换器离线 dry-run；在 Windows Server 2025 使用固定的 .NET 8 SDK 还原、构建并检查 GUI（包括嵌入转换脚本），再验证 `win-x64` 自包含发布目录恰好只有一个 EXE；同时分别使用 PowerShell 7 与 Windows PowerShell 5.1 解析脚本、运行离线 smoke test，并执行关键 PSScriptAnalyzer 规则。
-- **CD**：推送指向 `main` 历史的 SemVer 标签（例如 `v2.10.0`）后，先复用完整 CI，再在 Windows 构建并实际自检自包含 `win-x64` 单 EXE；随后发布该精确 EXE、可选空白 `.env.example`、Linux tar.gz、内嵌 .NET Runtime 对应的许可证/第三方通知和 `SHA256SUMS.txt`。Windows 用户运行时仍只需下载 EXE，不再需要解压 ZIP、另放 PowerShell 脚本或安装 .NET Runtime。
+- **CI**：Pull Request、推送到 `main`/`gui` 或手动运行时，在 Ubuntu 24.04 检查 Bash 语法、ShellCheck 和 Linux 转换器离线 dry-run；在 Windows Server 2025 构建并检查 WinForms GUI、PowerShell 7/5.1 与 `win-x64` 单 EXE；在 Apple Silicon macOS runner 编译 SwiftUI GUI、构建固定版本的 LGPL FFmpeg、嵌入固定版本的 arm64 PowerShell，并检查应用架构、自检、签名和 DMG 完整性。
+- **CD**：推送指向 `main` 历史的 SemVer 标签（例如 `v2.11.0`）后，先复用完整 CI，再发布 Windows 单 EXE、macOS arm64 单 DMG、Linux tar.gz、空白 `.env.example`、相关许可证/第三方通知和 `SHA256SUMS.txt`。Windows 用户只需下载 EXE；Apple Silicon Mac 用户只需下载 DMG。
 - GitHub Actions 依赖固定到完整提交 SHA，并由 Dependabot 每周检查更新；CI 只拥有仓库读取权限，只有发布作业拥有 `contents: write`。
 
 发布新版本：
@@ -381,15 +388,15 @@ notepad .env
 ```bash
 git switch main
 git pull --ff-only
-git tag v2.10.0
-git push origin v2.10.0
+git tag v2.11.0
+git push origin v2.11.0
 ```
 
-Release 直接提供 Windows 单 EXE和空白 `.env.example`，Linux tar.gz 仍只包含 Linux 脚本与 README；同页的 .NET `LICENSE` 与 `THIRD-PARTY-NOTICES` 是内嵌 Runtime 的许可资料，不是运行依赖。Release 绝不包含真实 `.env`、API Key、BIN、音频、缓存、歌词或本地生成的元数据。
+Release 直接提供 Windows 单 EXE、macOS Apple Silicon 单 DMG 和空白 `.env.example`；Linux tar.gz 仍只包含 Linux 脚本与 README。macOS 应用内置的 PowerShell 与 LGPL FFmpeg 均随包附带许可证和来源说明；同页的 .NET 许可证资产不是 Windows 运行依赖。Release 绝不包含真实 `.env`、API Key、BIN、音频、缓存、歌词或本地生成的元数据。
 
 ## 本地歌词命名
 
-Windows 转换器会先在 BIN 所在目录和 `lyrics` 子目录中查找歌词。以下名称均可识别：
+Windows/macOS 增强转换器会先在 BIN 所在目录和 `lyrics` 子目录中查找歌词。以下名称均可识别：
 
 ```text
 01 - 歌曲名.lrc
@@ -483,7 +490,7 @@ sha256sum --check SHA256SUMS
 - 逐轨国内匹配仍要求候选属于同名专辑；国内平台只把附赠曲收录在另一张专辑时会保留 MusicBrainz 标签并继续使用后续歌词源，这是有意的防误配策略。
 - CD 音频本身通常不包含可搜索的专辑名，因此 MusicBrainz 仍承担首要 Disc ID/TOC 身份识别。若 MusicBrainz 完全没有该光盘，脚本只会采用同目录已有 JSON、TOC CD-TEXT 或结构明确的目录名作为提示；国内候选未通过整专轨数和时长校验时仍降级为基础轨号，不会仅凭名字猜专辑。
 - 在线查询会向元数据服务发送 Disc ID、专辑/歌曲名称和时长，不会上传音频内容。
-- 启用包含 Google 的翻译模式后，即使未配置 API Key，外文歌词也可能发送给 Google GTX 和 Bing 网页翻译；选择 `AI` 或 `None` 可禁用这两个免 Key 通道。曲名/艺人/专辑上下文只发送给 AI API 用于消歧，音频文件始终只在本地处理。正式 API 可能产生费用，所有外部服务均受各自隐私和数据保留政策约束。GUI 的 Key 不进入参数、预览、日志、EXE 或 Release；选择记住时，设置文件中也只保存当前 Windows 用户 DPAPI 密文。
+- 启用包含 Google 的翻译模式后，即使未配置 API Key，外文歌词也可能发送给 Google GTX 和 Bing 网页翻译；选择 `AI` 或 `None` 可禁用这两个免 Key 通道。曲名/艺人/专辑上下文只发送给 AI API 用于消歧，音频文件始终只在本地处理。正式 API 可能产生费用，所有外部服务均受各自隐私和数据保留政策约束。GUI 的 Key 不进入参数、预览、日志、EXE、DMG 或 Release；选择记住时，Windows 使用当前用户 DPAPI 密文，macOS 使用当前用户 Keychain。
 - 网易云音乐接口不是稳定的公开开发者 API，若服务端以后改变响应格式，脚本会安全回退到 MusicBrainz 标题，不会阻止音频转换。
 - 请仅归档和转换你有权处理的光盘与歌词。
 
@@ -505,4 +512,4 @@ sha256sum --check SHA256SUMS
 
 ## 安全说明
 
-仓库不包含服务器地址、账号、密码、API Token、光盘镜像、缓存或用户媒体文件。`.env.example` 只有空白占位符；真实 `.env` 已被忽略且不会打入发布包。GUI 不会把 Key 写入命令行、预览、日志、EXE 或 Release；只有用户主动选择记住时，`settings.json` 才保存 Windows 当前用户 DPAPI 密文。运行前请检查输出目录权限，妥善保存生成的 BIN 文件和 API Key。
+仓库不包含服务器地址、账号、密码、API Token、光盘镜像、缓存或用户媒体文件。`.env.example` 只有空白占位符；真实 `.env` 已被忽略且不会打入发布包。GUI 不会把 Key 写入命令行、预览、日志、EXE、DMG 或 Release；只有用户主动选择记住时，Windows 的 `settings.json` 才保存当前用户 DPAPI 密文，macOS 则把密钥交给当前用户 Keychain。运行前请检查输出目录权限，妥善保存生成的 BIN 文件和 API Key。

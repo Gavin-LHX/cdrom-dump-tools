@@ -2,7 +2,7 @@ namespace CdromDumpToolsGui.Core;
 
 public sealed class ConversionOptions
 {
-    public const string CurrentVersion = "2.10.0";
+    public const string CurrentVersion = "2.11.0";
     public const string DefaultMusicBrainzUserAgent =
         "BinToAudioWindows/" + CurrentVersion + " (https://github.com/Gavin-LHX/cdrom-dump-tools)";
     private const string OfficialUserAgentSuffix =
