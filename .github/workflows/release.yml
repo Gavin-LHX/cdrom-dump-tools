@@ -224,12 +224,69 @@ jobs:
           compression-level: 0
           retention-days: 1
 
+  package-ios:
+    name: Build and test unsigned iOS 26 arm64 IPA (Xcode 26)
+    needs: validate
+    runs-on: macos-26
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build and verify exact unsigned iOS 26 asset
+        shell: bash
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+          OUTPUT_DIR: ${{ runner.temp }}/ios-dist
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          test "$(xcodebuild -version | awk 'NR == 1 { print $2 }')" = 26.6
+          test "$(xcrun --sdk iphoneos --show-sdk-version | cut -d. -f1)" = 26
+          test "$(xcrun --sdk iphonesimulator --show-sdk-version | cut -d. -f1)" = 26
+          export VERSION="${GITHUB_REF_NAME#v}"
+          bash ios/build_ios_ipa.sh
+
+          expected_asset="$OUTPUT_DIR/cdrom-dump-tools-${VERSION}-ios26-arm64-unsigned.ipa"
+          if [[ ! -s "$expected_asset" ]]; then
+            printf 'Expected unsigned iOS IPA is missing or empty: %s\n' "$expected_asset" >&2
+            exit 1
+          fi
+          unzip -t "$expected_asset"
+
+      - name: Stage unsigned iOS 26 release asset
+        shell: bash
+        env:
+          OUTPUT_DIR: ${{ runner.temp }}/ios-dist
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          asset="cdrom-dump-tools-${version}-ios26-arm64-unsigned.ipa"
+          mkdir -p dist
+          install -m 0644 "$OUTPUT_DIR/$asset" "dist/$asset"
+
+      - name: Upload tested unsigned iOS 26 release asset
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ios26-arm64-unsigned-release
+          path: dist/*-ios26-arm64-unsigned.ipa
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
   release:
     name: Package and publish
     needs:
       - validate
       - package-windows
       - package-macos
+      - package-ios
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -274,6 +331,12 @@ jobs:
           name: macos-x64-unsigned-release
           path: dist
 
+      - name: Download tested unsigned iOS 26 arm64 release asset
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ios26-arm64-unsigned-release
+          path: dist
+
       - name: Ensure release tooling
         shell: bash
         run: |
@@ -290,6 +353,7 @@ jobs:
           windows_executable="dist/${package}-windows-x64.exe"
           macos_arm64_dmg="dist/${package}-macos-arm64-unsigned.dmg"
           macos_x64_dmg="dist/${package}-macos-x64-unsigned.dmg"
+          ios26_arm64_ipa="dist/${package}-ios26-arm64-unsigned.ipa"
           dotnet_license="dist/${package}-dotnet-LICENSE.txt"
           dotnet_notices="dist/${package}-dotnet-THIRD-PARTY-NOTICES.txt"
           env_template="dist/${package}.env.example"
@@ -298,6 +362,7 @@ jobs:
             "$windows_executable" \
             "$macos_arm64_dmg" \
             "$macos_x64_dmg" \
+            "$ios26_arm64_ipa" \
             "$dotnet_license" \
             "$dotnet_notices"; do
             if [[ ! -s "$required_asset" ]]; then
@@ -333,10 +398,12 @@ jobs:
               "${package}-windows-x64.exe" \
               "${package}-macos-arm64-unsigned.dmg" \
               "${package}-macos-x64-unsigned.dmg" \
+              "${package}-ios26-arm64-unsigned.ipa" \
               "${package}-dotnet-LICENSE.txt" \
               "${package}-dotnet-THIRD-PARTY-NOTICES.txt" \
               "${package}.env.example" \
               "${package}-linux.tar.gz" >SHA256SUMS.txt
+            sha256sum --check SHA256SUMS.txt
           )
 
       - name: Publish GitHub Release
@@ -351,18 +418,22 @@ jobs:
           windows_executable="dist/cdrom-dump-tools-${version}-windows-x64.exe"
           macos_arm64_dmg="dist/cdrom-dump-tools-${version}-macos-arm64-unsigned.dmg"
           macos_x64_dmg="dist/cdrom-dump-tools-${version}-macos-x64-unsigned.dmg"
+          ios26_arm64_ipa="dist/cdrom-dump-tools-${version}-ios26-arm64-unsigned.ipa"
           dotnet_license="dist/cdrom-dump-tools-${version}-dotnet-LICENSE.txt"
           dotnet_notices="dist/cdrom-dump-tools-${version}-dotnet-THIRD-PARTY-NOTICES.txt"
           env_template="dist/cdrom-dump-tools-${version}.env.example"
           linux_archive="dist/cdrom-dump-tools-${version}-linux.tar.gz"
           checksums="dist/SHA256SUMS.txt"
           macos_warning=$'> [!WARNING]\n> The macOS arm64 and x64 DMGs are ad-hoc signed and have not been signed with an Apple Developer ID or notarized by Apple. Gatekeeper may block them; both assets are intentionally named `unsigned`.'
+          ios_warning=$'> [!WARNING]\n> The iOS 26 arm64 IPA is intentionally unsigned and contains no provisioning profile. It cannot be installed directly on a normal iPhone or iPad; sign it with your own Apple Developer identity and matching provisioning profile before installation.'
+          apple_warnings="${macos_warning}"$'\n\n'"${ios_warning}"
 
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" \
               "$windows_executable" \
               "$macos_arm64_dmg" \
               "$macos_x64_dmg" \
+              "$ios26_arm64_ipa" \
               "$dotnet_license" \
               "$dotnet_notices" \
               "$env_template" \
@@ -374,27 +445,47 @@ jobs:
               "$windows_executable" \
               "$macos_arm64_dmg" \
               "$macos_x64_dmg" \
+              "$ios26_arm64_ipa" \
               "$dotnet_license" \
               "$dotnet_notices" \
               "$env_template" \
               "$linux_archive" \
               "$checksums" \
               --verify-tag \
-              --notes "$macos_warning" \
+              --notes "$apple_warnings" \
               --generate-notes \
               --title "$tag"
           fi
 
           current_notes="$(gh release view "$tag" --json body --jq '.body // ""')"
+          missing_warnings=''
           if [[ "$current_notes" != *'macOS arm64 and x64 DMGs are ad-hoc signed'* ]]; then
-            notes_file="$RUNNER_TEMP/release-notes-with-macos-warning.md"
-            printf '%s\n\n%s\n' "$macos_warning" "$current_notes" >"$notes_file"
+            missing_warnings="$macos_warning"
+          fi
+          if [[ "$current_notes" != *'iOS 26 arm64 IPA is intentionally unsigned'* ]]; then
+            if [[ -n "$missing_warnings" ]]; then
+              missing_warnings+=$'\n\n'
+            fi
+            missing_warnings+="$ios_warning"
+          fi
+          if [[ -n "$missing_warnings" ]]; then
+            notes_file="$RUNNER_TEMP/release-notes-with-apple-warnings.md"
+            printf '%s\n\n%s\n' "$missing_warnings" "$current_notes" >"$notes_file"
             gh release edit "$tag" --notes-file "$notes_file"
           fi
 
           release_assets_json="$RUNNER_TEMP/release-assets.json"
           gh release view "$tag" --json assets >"$release_assets_json"
-          for local_asset in "$macos_arm64_dmg" "$macos_x64_dmg"; do
+          for local_asset in \
+            "$windows_executable" \
+            "$macos_arm64_dmg" \
+            "$macos_x64_dmg" \
+            "$ios26_arm64_ipa" \
+            "$dotnet_license" \
+            "$dotnet_notices" \
+            "$env_template" \
+            "$linux_archive" \
+            "$checksums"; do
             asset_name="$(basename "$local_asset")"
             local_size="$(stat -c '%s' "$local_asset")"
             remote_size="$(

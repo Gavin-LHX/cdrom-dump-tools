@@ -2,7 +2,7 @@
 
 一套用于完整读取 CD、保存 BIN/TOC 镜像，以及将 CD-DA 音轨转换为 FLAC/WAV 的脚本。
 
-项目同时提供 Linux 服务器端的光盘镜像脚本，以及 Windows/macOS 本地增强转换工具。Windows 使用 .NET 8 WinForms 单 EXE，macOS 使用原生 SwiftUI 应用；两者共用同一套 PowerShell 转换引擎，能够自动查询专辑与曲目信息、重命名文件、写入封面和标签，并获取同步歌词。
+项目同时提供 Linux 服务器端的光盘镜像脚本、Windows/macOS 本地增强转换工具，以及 iOS 26 原生移动转换器。Windows 使用 .NET 8 WinForms 单 EXE，macOS 使用原生 SwiftUI 应用；两者共用同一套 PowerShell 转换引擎。iPhone 版则受 iOS 沙盒限制，使用 Swift/AudioToolbox 原生解析、编码和校验现成 BIN/TOC。
 
 ## 文件说明
 
@@ -13,7 +13,8 @@
 | `bin_to_audio_windows.ps1` | Windows/macOS | 增强转换器：拆轨、元数据、年份/流派比对、封面、歌词和自动命名 |
 | `bin_to_audio_windows.cmd` | Windows | 拖放式启动器，默认调用 PowerShell 脚本转换为 FLAC |
 | [`gui/`](gui/README.md) | Windows | .NET 8 WinForms 前端：配置转换参数、显示实时日志、取消任务并打开最终输出目录 |
-| [`macos/`](macos/README.md) | macOS Apple Silicon | 原生 SwiftUI 前端：单个 DMG 分发，应用内置 PowerShell、FFmpeg 与转换脚本 |
+| [`macos/`](macos/README.md) | macOS Apple Silicon / Intel | 原生 SwiftUI 前端：按架构分发 DMG，应用内置 PowerShell、FFmpeg 与转换脚本 |
+| [`ios/`](ios/README.md) | iOS 26 / arm64 | 原生 SwiftUI 移动版：从“文件”App 导入现成 BIN/TOC，原生输出并校验 FLAC/WAV |
 | `.env.example` | Windows/macOS | 机器翻译回退的高级/命令行配置模板；GUI 也可直接填写，真实 `.env` 不应提交或分享 |
 
 ## 功能概览
@@ -100,6 +101,12 @@ GUI 应以普通用户身份运行；它会拒绝提升后的管理员令牌。�
 [`macos/`](macos/README.md) 提供原生 SwiftUI 前端，功能与 Windows GUI 的转换选项保持一致：BIN/TOC 与输出目录选择、FLAC/WAV、在线元数据、封面、歌词和中文翻译回退、国内标签源优先级、MusicBrainz 多发行版候选选择、逐轨无损校验、实时日志、进度、取消任务和输出目录定位。macOS 26 及以上使用系统原生 Liquid Glass，macOS 14/15 自动回退到材质界面；“降低透明度”辅助功能同样受到尊重。AI 服务配置保存在 macOS Keychain；Key 不进入命令行、日志、应用或 Release。
 
 Release 同时提供两份原生、彼此独立的 macOS 安装包：Apple Silicon 使用 `cdrom-dump-tools-<版本>-macos-arm64-unsigned.dmg`，Intel Mac 使用 `cdrom-dump-tools-<版本>-macos-x64-unsigned.dmg`。它们不是 Universal 合并包；请按处理器下载对应版本，Apple Silicon 用户无需也不应为了运行 Intel 版而安装 Rosetta。每份 DMG 都内置同架构的 PowerShell、LGPL FFmpeg 和转换脚本，不需要另装 Homebrew、PowerShell、FFmpeg 或 .NET。两版最低均为 macOS 14；macOS 26 及以上使用原生 Liquid Glass，macOS 14/15 使用 Material 回退。当前公开包使用 ad-hoc 签名且未经过 Apple notarization；首次启动如被 Gatekeeper 拦截，请在 Finder 中右键应用并选择“打开”。构建依赖、隐私说明和验证方式见 [macOS 中文说明](macos/README.md)。
+
+### iOS 26 图形界面
+
+[`ios/`](ios/README.md) 是面向 iPhone 的原生 SwiftUI/Liquid Glass 版本。它从“文件”App 导入已有 BIN/TOC，流式输出 FLAC/WAV，并默认把成品重新解码后与原 BIN 段逐轨比较 PCM SHA-256。它会计算 MusicBrainz Disc ID、在多个发行版本时要求人工选择、按专辑和曲名重命名、写入 FLAC/WAV 标签，并从 Cover Art Archive 尽力获取和嵌入封面。输出目录可在“文件”App 中访问和分享。
+
+iPhone 不能直接读取实体光驱，也不允许应用运行捆绑的 PowerShell/FFmpeg，因此 iOS 版是独立原生实现。首版尚未移植桌面的网易云/QQ 多源标签、歌词、SRT 和 AI 翻译；需要完整增强刮削时仍应使用 Windows/macOS 版。Release 资产名为 `cdrom-dump-tools-<版本>-ios26-arm64-unsigned.ipa`，最低 iOS 26.0。该 IPA 没有 Apple Developer 签名或 provisioning profile，不能直接安装，必须由用户使用自己的开发者身份重签名。详细功能边界、构建与验证方式见 [iOS 中文说明](ios/README.md)。
 
 ## Linux：安装与读取 CD
 
@@ -379,8 +386,8 @@ notepad .env
 
 仓库内置 GitHub Actions：
 
-- **CI**：Pull Request、推送到 `main`/`gui` 或手动运行时，在 Ubuntu 24.04 检查 Bash 语法、ShellCheck 和 Linux 转换器离线 dry-run；在 Windows Server 2025 构建并检查 WinForms GUI、PowerShell 7/5.1 与 `win-x64` 单 EXE；在 Xcode 26/macOS 26 SDK 的 Apple Silicon `arm64` 与 Intel `x86_64` runner 上分别原生构建 SwiftUI GUI（部署目标仍为 macOS 14）、固定版本的 LGPL FFmpeg 和对应架构的官方 PowerShell，并分别检查 Mach-O 架构、内置工具启动、自检、离线 BIN/TOC 转换、ad-hoc 签名和 DMG 完整性。
-- **CD**：推送指向 `main` 历史的 SemVer 标签（例如 `v2.12.0`）后，先复用完整 CI，再发布 Windows 单 EXE、macOS arm64/x64 两份独立 DMG、Linux tar.gz、空白 `.env.example`、相关许可证/第三方通知和 `SHA256SUMS.txt`。Windows 用户下载 EXE；Mac 用户按处理器下载 `macos-arm64` 或 `macos-x64` DMG。
+- **CI**：Pull Request、推送到 `main`/`gui` 或手动运行时，在 Ubuntu 24.04 检查 Bash 语法、ShellCheck 和 Linux 转换器离线 dry-run；在 Windows Server 2025 构建并检查 WinForms GUI、PowerShell 7/5.1 与 `win-x64` 单 EXE；在 Xcode 26/macOS 26 SDK 的 Apple Silicon `arm64` 与 Intel `x86_64` runner 上分别原生构建 macOS SwiftUI GUI；并在 Xcode 26.6/iOS 26 SDK runner 上运行原生音频核心自检、编译 simulator/device 目标及核验未签名 IPA。
+- **CD**：推送指向 `main` 历史的 SemVer 标签（例如 `v2.13.0`）后，先复用完整 CI，再发布 Windows 单 EXE、macOS arm64/x64 两份独立 DMG、iOS 26 arm64 未签名 IPA、Linux tar.gz、空白 `.env.example`、相关许可证/第三方通知和 `SHA256SUMS.txt`。
 - GitHub Actions 依赖固定到完整提交 SHA，并由 Dependabot 每周检查更新；CI 只拥有仓库读取权限，只有发布作业拥有 `contents: write`。
 
 发布新版本：
@@ -388,11 +395,11 @@ notepad .env
 ```bash
 git switch main
 git pull --ff-only
-git tag v2.12.0
-git push origin v2.12.0
+git tag v2.13.0
+git push origin v2.13.0
 ```
 
-Release 直接提供 Windows 单 EXE、macOS Apple Silicon 单 DMG 和空白 `.env.example`；Linux tar.gz 仍只包含 Linux 脚本与 README。macOS 应用内置的 PowerShell 与 LGPL FFmpeg 均随包附带许可证和来源说明；同页的 .NET 许可证资产不是 Windows 运行依赖。Release 绝不包含真实 `.env`、API Key、BIN、音频、缓存、歌词或本地生成的元数据。
+Release 直接提供 Windows 单 EXE、macOS arm64/x64 两份 DMG、iOS 26 arm64 未签名 IPA 和空白 `.env.example`；Linux tar.gz 仍只包含 Linux 脚本与 README。macOS 应用内置的 PowerShell 与 LGPL FFmpeg 均随包附带许可证和来源说明；同页的 .NET 许可证资产不是 Windows 运行依赖。Release 绝不包含真实 `.env`、API Key、BIN、音频、缓存、歌词或本地生成的元数据。
 
 ## 本地歌词命名
 

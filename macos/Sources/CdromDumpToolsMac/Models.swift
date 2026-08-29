@@ -1,7 +1,7 @@
 import Foundation
 
 enum AppIdentity {
-    static let fallbackVersion = "2.12.0"
+    static let fallbackVersion = "2.13.0"
     static var version: String {
         if let value = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
            !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
