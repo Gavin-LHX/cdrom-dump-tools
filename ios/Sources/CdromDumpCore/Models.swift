@@ -63,8 +63,31 @@ struct NativeConversionRequest: Sendable {
     let format: AudioOutputFormat
     let verifyAudio: Bool
     let album: AlbumCandidate?
+    let enrichment: EnrichedAlbumMetadata?
     let coverData: Data?
     let appVersion: String
+
+    init(
+        binURL: URL,
+        tocURL: URL,
+        outputParentURL: URL,
+        format: AudioOutputFormat,
+        verifyAudio: Bool,
+        album: AlbumCandidate?,
+        enrichment: EnrichedAlbumMetadata? = nil,
+        coverData: Data?,
+        appVersion: String
+    ) {
+        self.binURL = binURL
+        self.tocURL = tocURL
+        self.outputParentURL = outputParentURL
+        self.format = format
+        self.verifyAudio = verifyAudio
+        self.album = album
+        self.enrichment = enrichment
+        self.coverData = coverData
+        self.appVersion = appVersion
+    }
 }
 
 struct ConversionProgressEvent: Sendable {
@@ -106,7 +129,7 @@ struct ConversionSummary: Encodable, Sendable {
 }
 
 enum IOSAppVersion {
-    static let fallback = "2.13.0"
+    static let fallback = "2.14.0"
 
     static var current: String {
         if let value = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,

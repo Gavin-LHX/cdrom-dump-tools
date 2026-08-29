@@ -11,6 +11,52 @@ struct AudioTags: Sendable {
     let trackTotal: Int
     let isrc: String?
     let musicBrainzReleaseID: String?
+    let musicBrainzRecordingID: String?
+    let genre: String?
+    let netEaseAlbumID: String?
+    let netEaseTrackID: String?
+    let qqMusicAlbumMID: String?
+    let qqMusicTrackMID: String?
+    let qqMusicTrackID: String?
+    let lyrics: TrackLyrics?
+
+    init(
+        title: String,
+        artist: String,
+        album: String?,
+        albumArtist: String?,
+        date: String?,
+        trackNumber: Int,
+        trackTotal: Int,
+        isrc: String?,
+        musicBrainzReleaseID: String?,
+        musicBrainzRecordingID: String? = nil,
+        genre: String? = nil,
+        netEaseAlbumID: String? = nil,
+        netEaseTrackID: String? = nil,
+        qqMusicAlbumMID: String? = nil,
+        qqMusicTrackMID: String? = nil,
+        qqMusicTrackID: String? = nil,
+        lyrics: TrackLyrics? = nil
+    ) {
+        self.title = title
+        self.artist = artist
+        self.album = album
+        self.albumArtist = albumArtist
+        self.date = date
+        self.trackNumber = trackNumber
+        self.trackTotal = trackTotal
+        self.isrc = isrc
+        self.musicBrainzReleaseID = musicBrainzReleaseID
+        self.musicBrainzRecordingID = musicBrainzRecordingID
+        self.genre = genre
+        self.netEaseAlbumID = netEaseAlbumID
+        self.netEaseTrackID = netEaseTrackID
+        self.qqMusicAlbumMID = qqMusicAlbumMID
+        self.qqMusicTrackMID = qqMusicTrackMID
+        self.qqMusicTrackID = qqMusicTrackID
+        self.lyrics = lyrics
+    }
 }
 
 enum AudioMetadataWriter {
@@ -107,6 +153,26 @@ enum AudioMetadataWriter {
         if let value = tags.date { comments.append("DATE=\(clean(value))") }
         if let value = tags.isrc { comments.append("ISRC=\(clean(value))") }
         if let value = tags.musicBrainzReleaseID { comments.append("MUSICBRAINZ_ALBUMID=\(clean(value))") }
+        if let value = tags.musicBrainzRecordingID { comments.append("MUSICBRAINZ_TRACKID=\(clean(value))") }
+        if let value = tags.genre { comments.append("GENRE=\(clean(value))") }
+        if let value = tags.netEaseAlbumID { comments.append("NETEASE_ALBUM_ID=\(clean(value))") }
+        if let value = tags.netEaseTrackID { comments.append("NETEASE_TRACK_ID=\(clean(value))") }
+        if let value = tags.qqMusicAlbumMID { comments.append("QQMUSIC_ALBUM_MID=\(clean(value))") }
+        if let value = tags.qqMusicTrackMID { comments.append("QQMUSIC_TRACK_MID=\(clean(value))") }
+        if let value = tags.qqMusicTrackID { comments.append("QQMUSIC_TRACK_ID=\(clean(value))") }
+        if let lyrics = tags.lyrics {
+            if let value = lyrics.original { comments.append("ORIGINAL_LYRICS=\(cleanMultiline(value))") }
+            if let value = lyrics.synced { comments.append("ORIGINAL_SYNCED_LYRICS=\(cleanMultiline(value))") }
+            if let value = lyrics.translated { comments.append("TRANSLATED_LYRICS=\(cleanMultiline(value))") }
+            if let value = lyrics.translatedSynced { comments.append("TRANSLATED_SYNCED_LYRICS=\(cleanMultiline(value))") }
+            if let value = lyrics.romanized { comments.append("ROMANIZED_LYRICS=\(cleanMultiline(value))") }
+            if let value = lyrics.translated ?? lyrics.original { comments.append("LYRICS=\(cleanMultiline(value))") }
+            if let value = lyrics.translatedSynced ?? lyrics.synced { comments.append("SYNCEDLYRICS=\(cleanMultiline(value))") }
+            comments.append("LYRICS_SOURCE=\(clean(lyrics.source))")
+            if let value = lyrics.translationProvider { comments.append("LYRICS_TRANSLATION_PROVIDER=\(clean(value))") }
+            if let value = lyrics.translationModel { comments.append("LYRICS_TRANSLATION_MODEL=\(clean(value))") }
+            comments.append("LYRICS_MACHINE_TRANSLATED=\(lyrics.machineTranslated ? "1" : "0")")
+        }
 
         var payload = Data()
         payload.appendLittleEndianMetadata(UInt32(vendor.count))
@@ -160,6 +226,7 @@ enum AudioMetadataWriter {
         if let value = tags.album { fields.append(("IPRD", value)) }
         if let value = tags.date { fields.append(("ICRD", value)) }
         if let value = tags.isrc { fields.append(("ISRC", value)) }
+        if let value = tags.genre { fields.append(("IGNR", value)) }
 
         var info = Data("INFO".utf8)
         for (fourCC, value) in fields {
@@ -189,6 +256,13 @@ enum AudioMetadataWriter {
         value.replacingOccurrences(of: "\u{0000}", with: "")
             .replacingOccurrences(of: "\r", with: " ")
             .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func cleanMultiline(_ value: String) -> String {
+        value.replacingOccurrences(of: "\u{0000}", with: "")
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

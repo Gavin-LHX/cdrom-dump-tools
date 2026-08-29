@@ -21,10 +21,18 @@ enum NativeAudioConverter {
         if let album = request.album, album.tracks.count != tracks.count {
             throw NativeConversionError.message("所选专辑有 \(album.tracks.count) 轨，但 TOC 有 \(tracks.count) 轨。")
         }
+        if let enrichment = request.enrichment, enrichment.tracks.count != tracks.count {
+            throw NativeConversionError.message("多源标签有 \(enrichment.tracks.count) 轨，但 TOC 有 \(tracks.count) 轨。")
+        }
 
         let fileManager = FileManager.default
         try fileManager.createDirectory(at: request.outputParentURL, withIntermediateDirectories: true)
-        let desiredName = outputDirectoryName(album: request.album, format: request.format, fallback: request.binURL.deletingPathExtension().lastPathComponent)
+        let desiredName = outputDirectoryName(
+            album: request.album,
+            enrichment: request.enrichment,
+            format: request.format,
+            fallback: request.binURL.deletingPathExtension().lastPathComponent
+        )
         let finalURL = uniqueDirectory(parent: request.outputParentURL, desiredName: desiredName)
         let partialURL = request.outputParentURL.appendingPathComponent(".\(desiredName).partial.\(UUID().uuidString)", isDirectory: true)
         try fileManager.createDirectory(at: partialURL, withIntermediateDirectories: false)
@@ -43,12 +51,14 @@ enum NativeAudioConverter {
         defer { try? input.close() }
         var summaries: [TrackConversionSummary] = []
         var playlist: [String] = ["#EXTM3U"]
+        var lyricsManifest: [LyricsManifestEntry] = []
 
         for (index, track) in tracks.enumerated() {
             try Task.checkCancellation()
             let metadata = request.album?.tracks.first(where: { $0.position == track.number })
-            let title = metadata?.title ?? String(format: "Track %02d", track.number)
-            let artist = metadata?.artist ?? request.album?.artist ?? "未知艺术家"
+            let enrichedTrack = request.enrichment?.tracks.first(where: { $0.position == track.number })
+            let title = enrichedTrack?.title ?? metadata?.title ?? String(format: "Track %02d", track.number)
+            let artist = enrichedTrack?.artist ?? metadata?.artist ?? request.enrichment?.artist ?? request.album?.artist ?? "未知艺术家"
             let stem = safeFileName(String(format: "%02d - %@", track.number, title))
             let fileName = "\(stem).\(request.format.rawValue)"
             let outputURL = partialURL.appendingPathComponent(fileName)
@@ -100,16 +110,44 @@ enum NativeAudioConverter {
                 tags: AudioTags(
                     title: title,
                     artist: artist,
-                    album: request.album?.title,
-                    albumArtist: request.album?.artist,
-                    date: request.album?.date,
+                    album: request.enrichment?.title ?? request.album?.title,
+                    albumArtist: request.enrichment?.artist ?? request.album?.artist,
+                    date: request.enrichment?.date ?? request.album?.date,
                     trackNumber: track.number,
                     trackTotal: tracks.count,
-                    isrc: track.isrc,
-                    musicBrainzReleaseID: request.album?.releaseID
+                    isrc: enrichedTrack?.isrc ?? track.isrc,
+                    musicBrainzReleaseID: request.enrichment?.musicBrainzReleaseID ?? request.album?.releaseID,
+                    musicBrainzRecordingID: enrichedTrack?.recordingID ?? metadata?.recordingID,
+                    genre: request.enrichment?.genre,
+                    netEaseAlbumID: request.enrichment?.netEaseAlbumID,
+                    netEaseTrackID: enrichedTrack?.netEaseTrackID,
+                    qqMusicAlbumMID: request.enrichment?.qqMusicAlbumMID,
+                    qqMusicTrackMID: enrichedTrack?.qqMusicTrackMID,
+                    qqMusicTrackID: enrichedTrack?.qqMusicTrackID,
+                    lyrics: enrichedTrack?.lyrics
                 ),
                 coverData: request.coverData
             )
+
+            if let lyrics = enrichedTrack?.lyrics {
+                try writeLyricsArtifacts(
+                    lyrics,
+                    stem: stem,
+                    directory: partialURL,
+                    trackDurationMilliseconds: Int64((track.duration * 1_000).rounded())
+                )
+                lyricsManifest.append(LyricsManifestEntry(
+                    trackNumber: track.number,
+                    title: title,
+                    source: lyrics.source,
+                    instrumental: lyrics.instrumental,
+                    machineTranslated: lyrics.machineTranslated,
+                    translationProvider: lyrics.translationProvider,
+                    translationModel: lyrics.translationModel,
+                    hasSyncedLyrics: lyrics.synced != nil,
+                    hasChineseTranslation: lyrics.hasChineseContent
+                ))
+            }
 
             var decodedHash: String?
             var verified = false
@@ -151,6 +189,26 @@ enum NativeAudioConverter {
             encoding: .utf8
         )
 
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        if let enrichment = request.enrichment {
+            let metadataData = try encoder.encode(enrichment)
+            try metadataData.write(to: partialURL.appendingPathComponent("metadata.json"), options: .atomic)
+        }
+        if let album = request.album {
+            let musicBrainzData = try encoder.encode(album)
+            try musicBrainzData.write(
+                to: partialURL.appendingPathComponent("musicbrainz-metadata.json"),
+                options: .atomic
+            )
+        }
+        if !lyricsManifest.isEmpty {
+            try encoder.encode(lyricsManifest).write(
+                to: partialURL.appendingPathComponent("lyrics-metadata.json"),
+                options: .atomic
+            )
+        }
+
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let summary = ConversionSummary(
@@ -160,16 +218,35 @@ enum NativeAudioConverter {
             sourceBIN: request.binURL.lastPathComponent,
             sourceTOC: request.tocURL.lastPathComponent,
             outputFormat: request.format.rawValue,
-            albumTitle: request.album?.title,
-            albumArtist: request.album?.artist,
-            musicBrainzReleaseID: request.album?.releaseID,
+            albumTitle: request.enrichment?.title ?? request.album?.title,
+            albumArtist: request.enrichment?.artist ?? request.album?.artist,
+            musicBrainzReleaseID: request.enrichment?.musicBrainzReleaseID ?? request.album?.releaseID,
             audioVerification: request.verifyAudio ? "passed" : "not_requested",
             tracks: summaries,
             outputDirectory: finalURL
         )
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         try encoder.encode(summary).write(to: partialURL.appendingPathComponent("conversion-metadata.json"), options: .atomic)
+        let verificationReport = AudioVerificationReport(
+            schema: "cdrom-audio-verification-v1",
+            requested: request.verifyAudio,
+            status: request.verifyAudio ? "passed" : "not_requested",
+            tracks: summaries
+        )
+        try encoder.encode(verificationReport).write(
+            to: partialURL.appendingPathComponent("audio-verification.json"),
+            options: .atomic
+        )
+        let verificationLines = [
+            "Audio verification: \(verificationReport.status)",
+            "Method: decoded output PCM SHA-256 compared with each source BIN segment",
+        ] + summaries.map { track in
+            "Track \(String(format: "%02d", track.number)): \(track.verified ? "PASS" : (request.verifyAudio ? "FAIL" : "NOT REQUESTED"))"
+        }
+        try (verificationLines.joined(separator: "\n") + "\n").write(
+            to: partialURL.appendingPathComponent("audio-verification.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
 
         try writeChecksums(in: partialURL)
         try Task.checkCancellation()
@@ -481,15 +558,59 @@ enum NativeAudioConverter {
         }
     }
 
-    private static func outputDirectoryName(album: AlbumCandidate?, format: AudioOutputFormat, fallback: String) -> String {
+    private static func outputDirectoryName(
+        album: AlbumCandidate?,
+        enrichment: EnrichedAlbumMetadata?,
+        format: AudioOutputFormat,
+        fallback: String
+    ) -> String {
         let base: String
-        if let album {
+        if let enrichment {
+            let year = enrichment.year.map { " (\($0))" } ?? ""
+            base = "\(enrichment.artist) - \(enrichment.title)\(year) [\(format.rawValue.uppercased())]"
+        } else if let album {
             let year = album.year.map { " (\($0))" } ?? ""
             base = "\(album.artist) - \(album.title)\(year) [\(format.rawValue.uppercased())]"
         } else {
             base = "\(fallback) [\(format.rawValue.uppercased())]"
         }
         return safeFileName(base)
+    }
+
+    private static func writeLyricsArtifacts(
+        _ lyrics: TrackLyrics,
+        stem: String,
+        directory: URL,
+        trackDurationMilliseconds: Int64
+    ) throws {
+        guard !lyrics.instrumental else { return }
+        let preferredSynced = lyrics.translatedSynced ?? lyrics.synced
+        if let preferredSynced, LyricsArtifacts.isSyncedLRC(preferredSynced) {
+            try (preferredSynced.trimmingCharacters(in: .whitespacesAndNewlines) + "\n").write(
+                to: directory.appendingPathComponent("\(stem).lrc"),
+                atomically: true,
+                encoding: .utf8
+            )
+            if let srt = LyricsArtifacts.srt(
+                fromLRC: preferredSynced,
+                trackDurationMilliseconds: trackDurationMilliseconds
+            ) {
+                let subtitles = directory.appendingPathComponent("Subtitles", isDirectory: true)
+                try FileManager.default.createDirectory(at: subtitles, withIntermediateDirectories: true)
+                try srt.write(
+                    to: subtitles.appendingPathComponent("\(stem).srt"),
+                    atomically: true,
+                    encoding: .utf8
+                )
+            }
+        } else if let plain = lyrics.translated ?? lyrics.original,
+                  LyricsText.hasSubstantiveContent(plain) {
+            try (plain.trimmingCharacters(in: .whitespacesAndNewlines) + "\n").write(
+                to: directory.appendingPathComponent("\(stem).txt"),
+                atomically: true,
+                encoding: .utf8
+            )
+        }
     }
 
     private static func uniqueDirectory(parent: URL, desiredName: String) -> URL {
@@ -514,6 +635,9 @@ enum NativeAudioConverter {
 
     private static func writeChecksums(in directory: URL) throws {
         let manager = FileManager.default
+        let resolvedDirectory = directory.resolvingSymlinksInPath().standardizedFileURL
+        let directoryPath = resolvedDirectory.path
+        let directoryPrefix = directoryPath.hasSuffix("/") ? directoryPath : directoryPath + "/"
         guard let enumerator = manager.enumerator(
             at: directory,
             includingPropertiesForKeys: [.isRegularFileKey],
@@ -528,8 +652,16 @@ enum NativeAudioConverter {
         }
         files.sort { $0.path < $1.path }
         let lines = try files.map { file -> String in
-            let relative = file.path.replacingOccurrences(of: directory.path + "/", with: "")
-            return "\(try fileSHA256(file)) *\(relative)"
+            let resolvedFile = file.resolvingSymlinksInPath().standardizedFileURL
+            let filePath = resolvedFile.path
+            guard filePath.hasPrefix(directoryPrefix) else {
+                throw NativeConversionError.message("拒绝将输出目录之外的文件写入校验清单：\(filePath)")
+            }
+            let relative = String(filePath.dropFirst(directoryPrefix.count))
+            guard !relative.isEmpty, !relative.hasPrefix("/") else {
+                throw NativeConversionError.message("无法为校验清单生成安全的相对路径：\(filePath)")
+            }
+            return "\(try fileSHA256(resolvedFile)) *\(relative)"
         }
         try (lines.joined(separator: "\n") + "\n").write(
             to: directory.appendingPathComponent("SHA256SUMS.txt"),
@@ -549,6 +681,25 @@ enum NativeAudioConverter {
     private static func hex<D: Sequence>(_ digest: D) -> String where D.Element == UInt8 {
         digest.map { String(format: "%02x", $0) }.joined()
     }
+}
+
+private struct LyricsManifestEntry: Codable, Sendable {
+    let trackNumber: Int
+    let title: String
+    let source: String
+    let instrumental: Bool
+    let machineTranslated: Bool
+    let translationProvider: String?
+    let translationModel: String?
+    let hasSyncedLyrics: Bool
+    let hasChineseTranslation: Bool
+}
+
+private struct AudioVerificationReport: Codable, Sendable {
+    let schema: String
+    let requested: Bool
+    let status: String
+    let tracks: [TrackConversionSummary]
 }
 
 private extension Data {

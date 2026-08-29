@@ -26,7 +26,7 @@ struct ContentView: View {
                             importingBIN: $importingBIN,
                             importingTOC: $importingTOC
                         )
-                        OptionsCard(model: model)
+                        OptionsCard(model: model, settings: model.settings)
                         if let output = model.outputDirectoryURL {
                             OutputCard(outputURL: output)
                         }
@@ -40,6 +40,14 @@ struct ContentView: View {
             .navigationTitle("CD 光盘镜像转换")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    NavigationLink {
+                        IOSSettingsView(settings: model.settings)
+                    } label: {
+                        Label("在线内容与歌词", systemImage: "gearshape")
+                    }
+                    .disabled(model.isRunning)
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     NavigationLink {
                         LogView(model: model)
@@ -238,6 +246,7 @@ private struct ImportedFileRow: View {
 @MainActor
 private struct OptionsCard: View {
     @ObservedObject var model: IOSAppModel
+    @ObservedObject var settings: IOSSettingsStore
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -272,10 +281,46 @@ private struct OptionsCard: View {
                         .foregroundStyle(.secondary)
                 }
             }
+
+            Divider()
+
+            NavigationLink {
+                IOSSettingsView(settings: settings)
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "music.note.list")
+                        .font(.title3)
+                        .foregroundStyle(Color.accentColor)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("网易云、QQ、歌词与 AI 翻译")
+                            .foregroundStyle(.primary)
+                        Text(enrichmentSummary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .buttonStyle(.plain)
         }
         .padding(16)
         .cdromGlassSurface()
         .disabled(model.isRunning)
+    }
+
+    private var enrichmentSummary: String {
+        var parts: [String] = []
+        if settings.fetchOnlineMetadata { parts.append(settings.domesticSourcePriority.displayName) }
+        if settings.downloadCover { parts.append("封面") }
+        if settings.downloadLyrics {
+            parts.append("歌词")
+            if settings.translationMode != .none { parts.append(settings.translationMode.displayName) }
+        }
+        return parts.isEmpty ? "在线增强已关闭" : parts.joined(separator: " · ")
     }
 }
 

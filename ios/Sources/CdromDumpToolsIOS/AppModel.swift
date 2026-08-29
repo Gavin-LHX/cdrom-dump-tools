@@ -23,6 +23,7 @@ struct IOSLogEntry: Identifiable, Equatable, Sendable {
 
 @MainActor
 final class IOSAppModel: ObservableObject {
+    let settings: IOSSettingsStore
     @Published private(set) var binURL: URL?
     @Published private(set) var tocURL: URL?
     @Published var format: AudioOutputFormat = .flac
@@ -47,6 +48,10 @@ final class IOSAppModel: ObservableObject {
     private var startedAt: Date?
     private var pendingContext: PendingConversionContext?
     private var didWarnAboutBackground = false
+
+    init(settings: IOSSettingsStore = IOSSettingsStore()) {
+        self.settings = settings
+    }
 
     var canStart: Bool {
         binURL != nil && tocURL != nil && !isRunning
@@ -237,18 +242,51 @@ final class IOSAppModel: ObservableObject {
         do {
             let outputParent = try Self.outputParentDirectory()
             var coverData: Data?
+            var enrichment: EnrichedAlbumMetadata?
             if let album {
-                statusText = "正在获取封面"
-                phaseText = "从 Cover Art Archive 下载所选发行版封面…"
-                do {
-                    coverData = try await MusicBrainzClient().fetchFrontCover(releaseID: album.releaseID)
-                    if coverData != nil {
-                        appendLog("已获取所选 MusicBrainz 发行版的封面；FLAC 会嵌入封面。")
-                    } else {
-                        appendLog("所选发行版没有可用封面，继续转换。", isWarning: true)
+                let wantsEnrichment = settings.fetchOnlineMetadata || settings.downloadCover || settings.downloadLyrics
+                if wantsEnrichment {
+                    statusText = "正在补全专辑"
+                    phaseText = "整专比对网易云与 QQ 音乐，并按设置抓取封面和歌词…"
+                    let options = MetadataEnrichmentOptions(
+                        sourcePriority: settings.domesticSourcePriority,
+                        useNetEase: settings.useNetEase,
+                        useQQMusic: settings.useQQMusic,
+                        applyDomesticMetadata: settings.fetchOnlineMetadata,
+                        fetchCover: settings.downloadCover,
+                        fetchLyrics: settings.downloadLyrics,
+                        lyrics: settings.lyricsPipelineOptions()
+                    )
+                    let logTarget = self
+                    do {
+                        let result = try await MetadataEnrichmentService().enrich(
+                            musicBrainz: album,
+                            cdTracks: context.tracks,
+                            options: options
+                        ) { message in
+                            Task { @MainActor in logTarget.appendEnrichmentLog(message) }
+                        }
+                        enrichment = result.album
+                        coverData = result.coverData
+                        appendLog("多源链路完成；标签主源：\(result.album.tagSource)；封面：\(result.album.coverSource ?? "无")。")
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch {
+                        appendLog("多源增强失败：\(error.localizedDescription)；回退 MusicBrainz 基础标签。", isWarning: true)
                     }
-                } catch {
-                    appendLog("封面下载失败：\(error.localizedDescription)；继续转换。", isWarning: true)
+                }
+
+                if settings.downloadCover, coverData == nil {
+                    statusText = "正在获取封面"
+                    phaseText = "国内封面不可用，回退 Cover Art Archive…"
+                    do {
+                        coverData = try await URLSessionCoverArtworkFetcher().coverArtArchive(
+                            releaseID: album.releaseID
+                        )
+                        if coverData != nil { appendLog("已从 Cover Art Archive 获取封面。") }
+                    } catch {
+                        appendLog("封面回退不可用：\(error.localizedDescription)；继续转换。", isWarning: true)
+                    }
                 }
                 try Task.checkCancellation()
             }
@@ -259,6 +297,7 @@ final class IOSAppModel: ObservableObject {
                 format: format,
                 verifyAudio: verifyAudio,
                 album: album,
+                enrichment: enrichment,
                 coverData: coverData,
                 appVersion: IOSAppVersion.current
             )
@@ -301,6 +340,12 @@ final class IOSAppModel: ObservableObject {
            logs.last?.text != event.message {
             appendLog(event.message)
         }
+    }
+
+    private func appendEnrichmentLog(_ message: String) {
+        guard isRunning, !message.isEmpty else { return }
+        phaseText = message
+        if logs.last?.text != message { appendLog(message) }
     }
 
     private func finishSucceeded(_ summary: ConversionSummary) {

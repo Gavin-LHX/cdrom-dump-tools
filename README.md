@@ -106,7 +106,7 @@ Release 同时提供两份原生、彼此独立的 macOS 安装包：Apple Silic
 
 [`ios/`](ios/README.md) 是面向 iPhone 的原生 SwiftUI/Liquid Glass 版本。它从“文件”App 导入已有 BIN/TOC，流式输出 FLAC/WAV，并默认把成品重新解码后与原 BIN 段逐轨比较 PCM SHA-256。它会计算 MusicBrainz Disc ID、在多个发行版本时要求人工选择、按专辑和曲名重命名、写入 FLAC/WAV 标签，并从 Cover Art Archive 尽力获取和嵌入封面。输出目录可在“文件”App 中访问和分享。
 
-iPhone 不能直接读取实体光驱，也不允许应用运行捆绑的 PowerShell/FFmpeg，因此 iOS 版是独立原生实现。首版尚未移植桌面的网易云/QQ 多源标签、歌词、SRT 和 AI 翻译；需要完整增强刮削时仍应使用 Windows/macOS 版。Release 资产名为 `cdrom-dump-tools-<版本>-ios26-arm64-unsigned.ipa`，最低 iOS 26.0。该 IPA 没有 Apple Developer 签名或 provisioning profile，不能直接安装，必须由用户使用自己的开发者身份重签名。详细功能边界、构建与验证方式见 [iOS 中文说明](ios/README.md)。
+iPhone 不能直接读取实体光驱，也不允许应用运行捆绑的 PowerShell/FFmpeg，因此 iOS 版是独立 Swift/AudioToolbox 实现。它已原生移植 MusicBrainz 光盘识别与显式发行版选择、经整专/逐轨时长验证的网易云和 QQ 标签、国内封面回退、网易云 → QQ → LRCLIB 歌词、双语 LRC/SRT，以及 OpenAI/Anthropic/Google/Microsoft/GTX/Bing 中文翻译链；API Key 只存 iOS Keychain。Release 资产名为 `cdrom-dump-tools-<版本>-ios26-arm64-unsigned.ipa`，最低 iOS 26.0。该 IPA 没有 Apple Developer 签名或 provisioning profile，不能直接安装，必须由用户使用自己的开发者身份重签名。详细功能边界、隐私说明、构建与验证方式见 [iOS 中文说明](ios/README.md)。
 
 ## Linux：安装与读取 CD
 
@@ -387,7 +387,7 @@ notepad .env
 仓库内置 GitHub Actions：
 
 - **CI**：Pull Request、推送到 `main`/`gui` 或手动运行时，在 Ubuntu 24.04 检查 Bash 语法、ShellCheck 和 Linux 转换器离线 dry-run；在 Windows Server 2025 构建并检查 WinForms GUI、PowerShell 7/5.1 与 `win-x64` 单 EXE；在 Xcode 26/macOS 26 SDK 的 Apple Silicon `arm64` 与 Intel `x86_64` runner 上分别原生构建 macOS SwiftUI GUI；并在 Xcode 26.6/iOS 26 SDK runner 上运行原生音频核心自检、编译 simulator/device 目标及核验未签名 IPA。
-- **CD**：推送指向 `main` 历史的 SemVer 标签（例如 `v2.13.0`）后，先复用完整 CI，再发布 Windows 单 EXE、macOS arm64/x64 两份独立 DMG、iOS 26 arm64 未签名 IPA、Linux tar.gz、空白 `.env.example`、相关许可证/第三方通知和 `SHA256SUMS.txt`。
+- **CD**：推送指向 `main` 历史的 SemVer 标签（例如 `v2.14.0`）后，先复用完整 CI，再发布 Windows 单 EXE、macOS arm64/x64 两份独立 DMG、iOS 26 arm64 未签名 IPA、Linux tar.gz、空白 `.env.example`、相关许可证/第三方通知和 `SHA256SUMS.txt`。
 - GitHub Actions 依赖固定到完整提交 SHA，并由 Dependabot 每周检查更新；CI 只拥有仓库读取权限，只有发布作业拥有 `contents: write`。
 
 发布新版本：
@@ -395,8 +395,8 @@ notepad .env
 ```bash
 git switch main
 git pull --ff-only
-git tag v2.13.0
-git push origin v2.13.0
+git tag v2.14.0
+git push origin v2.14.0
 ```
 
 Release 直接提供 Windows 单 EXE、macOS arm64/x64 两份 DMG、iOS 26 arm64 未签名 IPA 和空白 `.env.example`；Linux tar.gz 仍只包含 Linux 脚本与 README。macOS 应用内置的 PowerShell 与 LGPL FFmpeg 均随包附带许可证和来源说明；同页的 .NET 许可证资产不是 Windows 运行依赖。Release 绝不包含真实 `.env`、API Key、BIN、音频、缓存、歌词或本地生成的元数据。

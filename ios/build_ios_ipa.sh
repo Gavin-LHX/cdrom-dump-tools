@@ -53,6 +53,7 @@ simulator_sdk_version="$(xcrun --sdk iphonesimulator --show-sdk-version)"
 core_source_dir="$script_dir/Sources/CdromDumpCore"
 app_source_dir="$script_dir/Sources/CdromDumpToolsIOS"
 test_source="$script_dir/Tests/CoreSelfTest.swift"
+test_source_dir="$script_dir/Tests"
 info_template="$script_dir/Info.plist.in"
 
 [[ -d "$core_source_dir" ]] || fail "Core source directory is missing: $core_source_dir"
@@ -63,10 +64,12 @@ info_template="$script_dir/Info.plist.in"
 shopt -s nullglob
 core_sources=("$core_source_dir"/*.swift)
 app_sources=("$app_source_dir"/*.swift)
+test_sources=("$test_source_dir"/*.swift)
 shopt -u nullglob
 
 (( ${#core_sources[@]} > 0 )) || fail "No Swift sources were found in $core_source_dir"
 (( ${#app_sources[@]} > 0 )) || fail "No Swift sources were found in $app_source_dir"
+(( ${#test_sources[@]} > 0 )) || fail "No Swift test sources were found in $test_source_dir"
 
 ios_source_version="$(sed -nE 's/^[[:space:]]*static let fallback = "([^"]+)".*/\1/p' \
     "$core_source_dir/Models.swift")"
@@ -92,7 +95,7 @@ xcrun --sdk macosx swiftc \
     -parse-as-library \
     -module-name CdromDumpCoreSelfTest \
     "${core_sources[@]}" \
-    "$test_source" \
+    "${test_sources[@]}" \
     -o "$core_test_binary"
 "$core_test_binary"
 

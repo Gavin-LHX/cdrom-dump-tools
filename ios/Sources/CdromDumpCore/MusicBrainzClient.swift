@@ -4,7 +4,13 @@ struct MusicBrainzClient: Sendable {
     private let session: URLSession
     private let userAgent: String
 
-    init(session: URLSession = .shared, appVersion: String = IOSAppVersion.current) {
+    init(
+        session: URLSession = SecureURLSessionFactory.ephemeral(
+            requestTimeout: 30,
+            resourceTimeout: 60
+        ),
+        appVersion: String = IOSAppVersion.current
+    ) {
         self.session = session
         self.userAgent = "CdromDumpToolsiOS/\(appVersion) (https://github.com/Gavin-LHX/cdrom-dump-tools)"
     }
@@ -125,7 +131,7 @@ struct MusicBrainzClient: Sendable {
                     return data
                 }
                 let statusError = HTTPStatusError(status: http.statusCode)
-                guard [429, 500, 502, 503, 504].contains(http.statusCode), attempt < 5 else {
+                guard [408, 409, 425, 429, 500, 502, 503, 504, 529].contains(http.statusCode), attempt < 5 else {
                     throw statusError
                 }
                 lastError = statusError
@@ -136,7 +142,7 @@ struct MusicBrainzClient: Sendable {
                 throw CancellationError()
             } catch {
                 if let statusError = error as? HTTPStatusError,
-                   ![429, 500, 502, 503, 504].contains(statusError.status) {
+                   ![408, 409, 425, 429, 500, 502, 503, 504, 529].contains(statusError.status) {
                     throw statusError
                 }
                 lastError = error
