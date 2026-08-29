@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 
 APP_ID = "io.github.gavinlhx.CdromDumpTools"
 APP_NAME = "CD-ROM Dump Tools"
-VERSION = "2.15.0"
+VERSION = "2.15.1"
 REPOSITORY_URL = "https://github.com/Gavin-LHX/cdrom-dump-tools"
 DEFAULT_USER_AGENT = f"CdromDumpToolsLinux/{VERSION} ({REPOSITORY_URL})"
 

@@ -42,7 +42,7 @@ param(
 
     [switch] $GuiReleaseSelection,
 
-    [string] $MusicBrainzUserAgent = 'BinToAudioWindows/2.15.0 (https://github.com/Gavin-LHX/cdrom-dump-tools)'
+    [string] $MusicBrainzUserAgent = 'BinToAudioWindows/2.15.1 (https://github.com/Gavin-LHX/cdrom-dump-tools)'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -5316,12 +5316,12 @@ try {
          'Accept'     = 'application/json'
      }
      $netEaseHeaders = @{
-         'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.15.0'
+         'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.15.1'
          'Accept'     = 'application/json'
          'Referer'    = 'https://music.163.com/'
      }
      $qqMusicHeaders = @{
-         'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.15.0'
+         'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.15.1'
          'Accept'     = 'application/json, text/plain, */*'
          'Referer'    = 'https://y.qq.com/'
      }
@@ -5514,7 +5514,7 @@ try {
                 if (-not $NoNetEase) {
                     try {
                         $netEaseHeaders = @{
-                            'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.15.0'
+                            'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.15.1'
                             'Accept'     = 'application/json'
                             'Referer'    = 'https://music.163.com/'
                         }
@@ -5560,7 +5560,7 @@ try {
                 if (-not $NoQQMusic) {
                     try {
                         $qqMusicHeaders = @{
-                            'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.15.0'
+                            'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.15.1'
                             'Accept'     = 'application/json, text/plain, */*'
                             'Referer'    = 'https://y.qq.com/'
                         }
@@ -6139,16 +6139,16 @@ try {
             Write-Host "Chinese lyrics translation fallback: $(@($lyricsTranslationSettings.Providers) -join ' -> ')"
         }
         $lyricsHeaders = @{
-            'User-Agent' = 'BinToAudioWindows/2.15.0 (https://github.com/Gavin-LHX/cdrom-dump-tools)'
+            'User-Agent' = 'BinToAudioWindows/2.15.1 (https://github.com/Gavin-LHX/cdrom-dump-tools)'
             'Accept'     = 'application/json'
         }
         $netEaseLyricsHeaders = @{
-            'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.15.0'
+            'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.15.1'
             'Accept'     = 'application/json'
             'Referer'    = 'https://music.163.com/'
         }
         $qqMusicLyricsHeaders = @{
-            'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.15.0'
+            'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.15.1'
             'Accept'     = 'application/json, text/plain, */*'
             'Referer'    = 'https://y.qq.com/'
             'Origin'     = 'https://y.qq.com'
@@ -6500,7 +6500,7 @@ try {
             $coverCandidates = [System.Collections.Generic.List[object]]::new()
             $coverCacheKey = $releaseId
             $imageHeaders = @{
-                'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.15.0'
+                'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) BinToAudioWindows/2.15.1'
                 'Accept'     = 'image/*,*/*;q=0.8'
             }
 

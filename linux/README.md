@@ -4,7 +4,7 @@ Linux 桌面应用使用 GTK4 与 libadwaita，面向 Ubuntu 24.04 及更新版�
 
 ## 安装
 
-按机器架构下载 `ubuntu-debian-amd64.deb` 或 `ubuntu-debian-arm64.deb`，然后使用 apt 安装；apt 会自动补齐 FFmpeg、GTK4、libadwaita 和 GNOME Keyring 工具：
+按机器架构下载 `ubuntu-debian-amd64.deb` 或 `ubuntu-debian-arm64.deb`，然后使用 apt 安装；apt 会自动补齐 FFmpeg、GTK4、libadwaita、Noto CJK 中文字体和 GNOME Keyring 工具：
 
 ```bash
 sudo apt install ./cdrom-dump-tools-*-ubuntu-debian-$(dpkg --print-architecture).deb
