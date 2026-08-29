@@ -268,11 +268,12 @@ final class IOSAppModel: ObservableObject {
             progress = 0
             appendLog("输出格式：\(format.displayName)；逐轨校验：\(verifyAudio ? "开启" : "关闭")。")
 
-            let worker = Task.detached(priority: .userInitiated) { [weak self] in
+            let progressTarget = self
+            let worker = Task.detached(priority: .userInitiated) {
                 try Self.withSecurityScopedAccess(to: [context.binURL, context.tocURL]) {
                     try NativeAudioConverter.convert(request) { event in
-                        Task { @MainActor [weak self] in
-                            self?.apply(event)
+                        Task { @MainActor in
+                            progressTarget.apply(event)
                         }
                     }
                 }
