@@ -4,7 +4,23 @@ import Darwin
 
 @main
 struct CoreSelfTest {
-    static func main() throws {
+    static func main() {
+        do {
+            try run()
+        } catch {
+            let value = error as NSError
+            let details = value.userInfo
+                .map { "\($0.key)=\($0.value)" }
+                .sorted()
+                .joined(separator: ", ")
+            FileHandle.standardError.write(Data(
+                "IOS CORE SELF-TEST ERROR: type=\(String(reflecting: type(of: error))) domain=\(value.domain) code=\(value.code) description=\(value.localizedDescription) userInfo={\(details)}\n".utf8
+            ))
+            Darwin.exit(1)
+        }
+    }
+
+    private static func run() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("cdrom-ios-core-tests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
@@ -49,8 +65,11 @@ struct CoreSelfTest {
         let pregapIdentity = try DiscIdentity.musicBrainz(tracks: pregapTracks, binSize: Int64(bin.count))
         require(pregapIdentity.trackOffsets[0] == 151, "START contributes to INDEX 01")
 
+        stage("WAV conversion and decoded PCM verification")
         try testConversion(format: .wav, root: root, binURL: binURL, tocURL: tocURL)
+        stage("short FLAC conversion and decoded PCM verification")
         try testConversion(format: .flac, root: root, binURL: binURL, tocURL: tocURL)
+        stage("chunked FLAC conversion and decoded PCM verification")
         try testFLACAcrossChunkBoundary(root: root)
         print("IOS CORE SELF-TEST PASS: TOC, pregap Disc ID, WAV, chunked FLAC, and decoded PCM verification")
     }
@@ -130,6 +149,10 @@ struct CoreSelfTest {
 
     private static func sha256(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func stage(_ value: String) {
+        FileHandle.standardError.write(Data("IOS CORE SELF-TEST STAGE: \(value)\n".utf8))
     }
 
     private static func require(_ condition: @autoclosure () -> Bool, _ label: String) {
