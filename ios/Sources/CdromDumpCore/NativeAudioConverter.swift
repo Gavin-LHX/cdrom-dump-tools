@@ -1,13 +1,12 @@
 import Foundation
-import AVFoundation
 import AudioToolbox
 import CryptoKit
 
 enum NativeAudioConverter {
     private static let sampleRate = 44_100.0
-    private static let channels: AVAudioChannelCount = 2
+    private static let channels: UInt32 = 2
     private static let bytesPerFrame = 4
-    private static let chunkFrames: AVAudioFrameCount = 65_536
+    private static let chunkFrames: UInt32 = 65_536
 
     static func convert(
         _ request: NativeConversionRequest,
@@ -357,46 +356,97 @@ enum NativeAudioConverter {
     }
 
     private static func decodedPCMHash(url: URL) throws -> (hash: String, frames: Int64) {
-        let file: AVAudioFile
-        do {
-            file = try AVAudioFile(
-                forReading: url,
-                commonFormat: .pcmFormatInt16,
-                interleaved: true
+        var fileReference: ExtAudioFileRef?
+        let openStatus = ExtAudioFileOpenURL(url as CFURL, &fileReference)
+        guard openStatus == noErr, let file = fileReference else {
+            throw NativeConversionError.message(
+                "无法打开 \(url.lastPathComponent) 进行无损校验：\(osStatusDescription(openStatus))"
             )
-        } catch {
-            throw NativeConversionError.message("无法重新解码 \(url.lastPathComponent)：\(error.localizedDescription)")
         }
-        guard file.processingFormat.sampleRate == sampleRate,
-              file.processingFormat.channelCount == channels,
-              file.processingFormat.commonFormat == .pcmFormatInt16,
-              file.processingFormat.isInterleaved else {
-            throw NativeConversionError.message("解码后的音频格式不是 44.1 kHz/16-bit/双声道交错 PCM。")
+        var needsDispose = true
+        defer {
+            if needsDispose { ExtAudioFileDispose(file) }
         }
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: chunkFrames) else {
-            throw NativeConversionError.message("无法分配音频校验缓冲区。")
+
+        var sourceFormat = AudioStreamBasicDescription()
+        var sourceFormatSize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        let sourceFormatStatus = ExtAudioFileGetProperty(
+            file,
+            kExtAudioFileProperty_FileDataFormat,
+            &sourceFormatSize,
+            &sourceFormat
+        )
+        guard sourceFormatStatus == noErr else {
+            throw NativeConversionError.message(
+                "无法读取 \(url.lastPathComponent) 的音频格式：\(osStatusDescription(sourceFormatStatus))"
+            )
+        }
+        guard sourceFormat.mSampleRate == sampleRate,
+              sourceFormat.mChannelsPerFrame == channels else {
+            throw NativeConversionError.message("解码后的音频格式不是 44.1 kHz/双声道 PCM。")
+        }
+
+        var clientFormat = AudioStreamBasicDescription(
+            mSampleRate: sampleRate,
+            mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked,
+            mBytesPerPacket: UInt32(bytesPerFrame),
+            mFramesPerPacket: 1,
+            mBytesPerFrame: UInt32(bytesPerFrame),
+            mChannelsPerFrame: channels,
+            mBitsPerChannel: 16,
+            mReserved: 0
+        )
+        let clientFormatStatus = ExtAudioFileSetProperty(
+            file,
+            kExtAudioFileProperty_ClientDataFormat,
+            UInt32(MemoryLayout<AudioStreamBasicDescription>.size),
+            &clientFormat
+        )
+        guard clientFormatStatus == noErr else {
+            throw NativeConversionError.message(
+                "无法配置 \(url.lastPathComponent) 的 16-bit PCM 校验解码：\(osStatusDescription(clientFormatStatus))"
+            )
         }
 
         var hasher = SHA256()
         var totalFrames: Int64 = 0
+        var buffer = Data(count: Int(chunkFrames) * bytesPerFrame)
         while true {
             try Task.checkCancellation()
-            do {
-                try file.read(into: buffer, frameCount: chunkFrames)
-            } catch let error as NSError
-                where error.domain == NSOSStatusErrorDomain && error.code == Int(kAudioFileEndOfFileError) {
-                break
+            var decodedFrames = chunkFrames
+            let readStatus = buffer.withUnsafeMutableBytes { storage -> OSStatus in
+                var audioBufferList = AudioBufferList(
+                    mNumberBuffers: 1,
+                    mBuffers: AudioBuffer(
+                        mNumberChannels: channels,
+                        mDataByteSize: UInt32(storage.count),
+                        mData: storage.baseAddress
+                    )
+                )
+                return ExtAudioFileRead(file, &decodedFrames, &audioBufferList)
             }
-            if buffer.frameLength == 0 { break }
-            let byteCount = Int(buffer.frameLength) * bytesPerFrame
-            let audioBuffers = UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList)
-            guard audioBuffers.count == 1, let pointer = audioBuffers[0].mData else {
-                throw NativeConversionError.message("解码器没有提供交错 PCM 数据。")
+            if readStatus == kAudioFileEndOfFileError { break }
+            guard readStatus == noErr else {
+                throw NativeConversionError.message(
+                    "解码 \(url.lastPathComponent) 失败：\(osStatusDescription(readStatus))"
+                )
             }
-            var data = Data(bytes: pointer, count: byteCount)
-            swapInt16ByteOrder(&data)
-            hasher.update(data: data)
-            totalFrames += Int64(buffer.frameLength)
+            if decodedFrames == 0 { break }
+
+            let byteCount = Int(decodedFrames) * bytesPerFrame
+            var decodedData = Data(buffer.prefix(byteCount))
+            swapInt16ByteOrder(&decodedData)
+            hasher.update(data: decodedData)
+            totalFrames += Int64(decodedFrames)
+        }
+
+        let disposeStatus = ExtAudioFileDispose(file)
+        needsDispose = false
+        guard disposeStatus == noErr else {
+            throw NativeConversionError.message(
+                "关闭 \(url.lastPathComponent) 的校验解码器失败：\(osStatusDescription(disposeStatus))"
+            )
         }
         return (hex(hasher.finalize()), totalFrames)
     }
