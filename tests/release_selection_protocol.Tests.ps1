@@ -103,8 +103,11 @@ $selected = Read-GuiReleaseSelection -Candidates $candidates
     $harness = $harness.Replace('__INDEX_FUNCTION__', $indexFunctionAst.Extent.Text)
     [IO.File]::WriteAllText($harnessPath, $harness, [Text.UTF8Encoding]::new($true))
 
+    $isWindowsPlatform = [Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
+        [Runtime.InteropServices.OSPlatform]::Windows
+    )
     $powerShellExecutable = if ($PSVersionTable.PSEdition -ceq 'Core') {
-        Join-Path $PSHOME 'pwsh.exe'
+        Join-Path $PSHOME $(if ($isWindowsPlatform) { 'pwsh.exe' } else { 'pwsh' })
     }
     else {
         Join-Path $PSHOME 'powershell.exe'

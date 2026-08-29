@@ -1,0 +1,16 @@
+Package: cdrom-dump-tools
+Version: @DEBIAN_VERSION@
+Section: sound
+Priority: optional
+Architecture: @ARCHITECTURE@
+Installed-Size: @INSTALLED_SIZE@
+Maintainer: Gavin-LHX <noreply@github.com>
+Depends: python3 (>= 3.10), python3-gi, gir1.2-gtk-4.0 (>= 4.8), gir1.2-adw-1 (>= 1.2), libsecret-tools, ffmpeg, ca-certificates, libc6 (>= 2.35), libgcc-s1, libgssapi-krb5-2, libstdc++6, libunwind8, zlib1g, libicu70 | libicu72 | libicu74 | libicu76 | libicu78, libssl3 | libssl3t64
+Recommends: gnome-keyring
+Homepage: https://github.com/Gavin-LHX/cdrom-dump-tools
+Description: GNOME frontend for verified CD-DA BIN/TOC conversion
+ Native GTK4/libadwaita interface for converting raw CD audio BIN/TOC images
+ to FLAC or WAV. Includes MusicBrainz identification, NetEase and QQ Music
+ metadata, cover art and lyrics, AI translation fallbacks, VLC subtitles, and
+ per-track decoded PCM verification. A pinned PowerShell runtime is bundled;
+ FFmpeg and GNOME libraries are installed as distribution dependencies.

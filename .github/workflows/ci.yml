@@ -76,10 +76,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bash -n dump_cdrom.sh bin_to_audio.sh macos/build_macos_app.sh ios/build_ios_ipa.sh tests/dump_cdrom_release_selection.Tests.sh
+          bash -n dump_cdrom.sh bin_to_audio.sh linux/build_deb.sh linux/test_installed_package.sh macos/build_macos_app.sh ios/build_ios_ipa.sh tests/dump_cdrom_release_selection.Tests.sh
           shellcheck --external-sources --severity=warning \
             dump_cdrom.sh \
             bin_to_audio.sh \
+            linux/build_deb.sh \
+            linux/test_installed_package.sh \
+            linux/packaging/cdrom-dump-tools \
             macos/build_macos_app.sh \
             ios/build_ios_ipa.sh \
             tests/dump_cdrom_release_selection.Tests.sh
@@ -425,6 +428,74 @@ jobs:
               $issues | Format-Table Severity, RuleName, Line, Column, Message -AutoSize
               throw "PSScriptAnalyzer found $($issues.Count) blocking issue(s)."
           }
+
+  linux-gnome:
+    name: Ubuntu/Debian GNOME ${{ matrix.arch }} package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+            machine: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            machine: aarch64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install GNOME package validation dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "${{ matrix.machine }}"
+          sudo apt-get update
+          sudo apt-get install -y \
+            appstream \
+            dbus-x11 \
+            desktop-file-utils \
+            ffmpeg \
+            gir1.2-adw-1 \
+            gir1.2-gtk-4.0 \
+            libsecret-tools \
+            lintian \
+            python3-gi \
+            xauth \
+            xvfb
+
+      - name: Run Linux frontend unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$PWD/linux/app"
+          export PYTHONPYCACHEPREFIX="$RUNNER_TEMP/python-cache"
+          python3 -m unittest discover -s linux/tests -v
+          python3 -m py_compile linux/app/cdrom_dump_tools/*.py
+
+      - name: Build and test native ${{ matrix.arch }} Debian package
+        shell: bash
+        env:
+          DOWNLOAD_CACHE_DIR: ${{ runner.temp }}/powershell-downloads
+          OUTPUT_DIR: ${{ runner.temp }}/linux-deb
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          bash linux/build_deb.sh
+
+          shopt -s nullglob
+          packages=("$OUTPUT_DIR"/cdrom-dump-tools-*-ubuntu-debian-"$TARGET_ARCH".deb)
+          if ((${#packages[@]} != 1)); then
+            printf 'Expected exactly one %s Debian package, found %s.\n' \
+              "$TARGET_ARCH" "${#packages[@]}" >&2
+            exit 1
+          fi
+          test -s "${packages[0]}"
+          CI=true bash linux/test_installed_package.sh "${packages[0]}"
 
   macos:
     name: macOS 14+ ${{ matrix.asset_arch }} native app (Xcode 26)

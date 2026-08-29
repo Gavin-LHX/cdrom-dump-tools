@@ -129,7 +129,7 @@ struct ConversionSummary: Encodable, Sendable {
 }
 
 enum IOSAppVersion {
-    static let fallback = "2.14.0"
+    static let fallback = "2.15.0"
 
     static var current: String {
         if let value = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,

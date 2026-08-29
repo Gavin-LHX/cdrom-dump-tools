@@ -25,3 +25,7 @@ obj/
 .vs/
 publish-standalone/
 gui/publish/
+
+# Python/Linux GUI build artifacts
+__pycache__/
+*.py[cod]

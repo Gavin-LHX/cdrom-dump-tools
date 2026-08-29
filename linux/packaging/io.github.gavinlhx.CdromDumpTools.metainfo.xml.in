@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.gavinlhx.CdromDumpTools</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>LicenseRef-proprietary</project_license>
+  <name>CD-ROM Dump Tools</name>
+  <name xml:lang="zh-CN">CD 光盘镜像转换</name>
+  <summary>Convert CD-DA BIN/TOC images with verified lossless output</summary>
+  <summary xml:lang="zh-CN">转换 CD-DA BIN/TOC 镜像并验证无损输出</summary>
+  <description>
+    <p>Native GNOME frontend for splitting raw CD audio images into FLAC or WAV tracks.</p>
+    <p>It can identify discs with MusicBrainz, enrich tags with NetEase Cloud Music and QQ Music, download cover art and lyrics, create VLC-compatible subtitles, translate lyrics, and compare decoded PCM hashes.</p>
+  </description>
+  <launchable type="desktop-id">io.github.gavinlhx.CdromDumpTools.desktop</launchable>
+  <provides>
+    <binary>cdrom-dump-tools</binary>
+  </provides>
+  <url type="homepage">https://github.com/Gavin-LHX/cdrom-dump-tools</url>
+  <url type="bugtracker">https://github.com/Gavin-LHX/cdrom-dump-tools/issues</url>
+  <developer id="io.github.gavinlhx">
+    <name>Gavin-LHX</name>
+  </developer>
+  <releases>
+    <release version="@VERSION@" date="@RELEASE_DATE@">
+      <description>
+        <p>First native GNOME release with the complete desktop metadata, lyrics, cover-art and translation pipeline.</p>
+      </description>
+    </release>
+  </releases>
+  <content_rating type="oars-1.1" />
+</component>

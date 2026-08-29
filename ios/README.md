@@ -33,7 +33,7 @@ iOS 已原生移植桌面版的 MusicBrainz → 网易云/QQ 标签链、网易�
 构建脚本要求 Apple Silicon macOS、Xcode 26.6、iOS 26.x device/simulator SDK：
 
 ```bash
-VERSION=2.14.0 \
+VERSION=2.15.0 \
 BUILD_NUMBER=1 \
 OUTPUT_DIR="$PWD/dist" \
 bash ios/build_ios_ipa.sh
@@ -50,7 +50,7 @@ bash ios/build_ios_ipa.sh
 输出：
 
 ```text
-cdrom-dump-tools-2.14.0-ios26-arm64-unsigned.ipa
+cdrom-dump-tools-2.15.0-ios26-arm64-unsigned.ipa
 ```
 
 ## 未签名分发限制

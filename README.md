@@ -2,7 +2,7 @@
 
 一套用于完整读取 CD、保存 BIN/TOC 镜像，以及将 CD-DA 音轨转换为 FLAC/WAV 的脚本。
 
-项目同时提供 Linux 服务器端的光盘镜像脚本、Windows/macOS 本地增强转换工具，以及 iOS 26 原生移动转换器。Windows 使用 .NET 8 WinForms 单 EXE，macOS 使用原生 SwiftUI 应用；两者共用同一套 PowerShell 转换引擎。iPhone 版则受 iOS 沙盒限制，使用 Swift/AudioToolbox 原生解析、编码和校验现成 BIN/TOC。
+项目同时提供 Linux 服务器端光盘镜像脚本、Windows/macOS/Linux GNOME 本地增强转换工具，以及 iOS 26 原生移动转换器。Windows 使用 .NET 8 WinForms 单 EXE，macOS 使用原生 SwiftUI，Linux 桌面版使用 GTK4/libadwaita；三个桌面版共用同一套 PowerShell 转换引擎。iPhone 版则受 iOS 沙盒限制，使用 Swift/AudioToolbox 原生解析、编码和校验现成 BIN/TOC。
 
 ## 文件说明
 
@@ -101,6 +101,18 @@ GUI 应以普通用户身份运行；它会拒绝提升后的管理员令牌。�
 [`macos/`](macos/README.md) 提供原生 SwiftUI 前端，功能与 Windows GUI 的转换选项保持一致：BIN/TOC 与输出目录选择、FLAC/WAV、在线元数据、封面、歌词和中文翻译回退、国内标签源优先级、MusicBrainz 多发行版候选选择、逐轨无损校验、实时日志、进度、取消任务和输出目录定位。macOS 26 及以上使用系统原生 Liquid Glass，macOS 14/15 自动回退到材质界面；“降低透明度”辅助功能同样受到尊重。AI 服务配置保存在 macOS Keychain；Key 不进入命令行、日志、应用或 Release。
 
 Release 同时提供两份原生、彼此独立的 macOS 安装包：Apple Silicon 使用 `cdrom-dump-tools-<版本>-macos-arm64-unsigned.dmg`，Intel Mac 使用 `cdrom-dump-tools-<版本>-macos-x64-unsigned.dmg`。它们不是 Universal 合并包；请按处理器下载对应版本，Apple Silicon 用户无需也不应为了运行 Intel 版而安装 Rosetta。每份 DMG 都内置同架构的 PowerShell、LGPL FFmpeg 和转换脚本，不需要另装 Homebrew、PowerShell、FFmpeg 或 .NET。两版最低均为 macOS 14；macOS 26 及以上使用原生 Liquid Glass，macOS 14/15 使用 Material 回退。当前公开包使用 ad-hoc 签名且未经过 Apple notarization；首次启动如被 Gatekeeper 拦截，请在 Finder 中右键应用并选择“打开”。构建依赖、隐私说明和验证方式见 [macOS 中文说明](macos/README.md)。
+
+### Linux GNOME 图形界面
+
+[`linux/`](linux/README.md) 提供面向 Ubuntu 与 Debian 的原生 GTK4/libadwaita 界面。它使用与 Windows/macOS 相同的增强转换引擎，完整保留 MusicBrainz 光盘识别与多发行版弹窗选择、网易云/QQ 标签与封面、歌词和双语字幕、AI/机器翻译回退、按专辑与曲名重命名，以及逐轨解码 PCM 校验。运行日志按批次更新且只在用户选择自动跟随时滚动；命令预览自动换行，不包含 API Key。
+
+Release 分别提供 `cdrom-dump-tools-<版本>-ubuntu-debian-amd64.deb` 和 `cdrom-dump-tools-<版本>-ubuntu-debian-arm64.deb`。按 `dpkg --print-architecture` 的结果下载对应文件，然后安装：
+
+```bash
+sudo apt install ./cdrom-dump-tools-*-ubuntu-debian-$(dpkg --print-architecture).deb
+```
+
+`.deb` 内置固定版本、对应架构的 PowerShell；APT 会补齐 FFmpeg、GTK4、libadwaita 和 `secret-tool`。程序从 GNOME 应用菜单或 `cdrom-dump-tools` 命令启动，API Key 可只保留在进程内，也可由用户主动保存到 GNOME Keyring；设置 JSON、命令预览和 Release 均不包含 Key。安装后可运行 `cdrom-dump-tools --self-test` 核对运行时。完整安装、架构和安全说明见 [Linux GNOME 中文说明](linux/README.md)。
 
 ### iOS 26 图形界面
 
@@ -228,7 +240,7 @@ chmod +x bin_to_audio.sh
 ./bin_to_audio.sh --dry-run /path/to/disc.bin
 ```
 
-Linux 转换器是基础离线版本，只写入轨号和 TOC 中已有的 ISRC。需要自动专辑信息、封面、歌词及曲名重命名时，使用 Windows 增强版本。
+`bin_to_audio.sh` 是保留给服务器和最小系统使用的基础离线版本，只写入轨号和 TOC 中已有的 ISRC。需要自动专辑信息、封面、歌词、AI 翻译及曲名重命名时，请使用 Linux GNOME `.deb`、Windows GUI、macOS GUI，或直接运行增强 PowerShell 脚本。
 
 ## Windows：增强转换
 
@@ -387,7 +399,7 @@ notepad .env
 仓库内置 GitHub Actions：
 
 - **CI**：Pull Request、推送到 `main`/`gui` 或手动运行时，在 Ubuntu 24.04 检查 Bash 语法、ShellCheck 和 Linux 转换器离线 dry-run；在 Windows Server 2025 构建并检查 WinForms GUI、PowerShell 7/5.1 与 `win-x64` 单 EXE；在 Xcode 26/macOS 26 SDK 的 Apple Silicon `arm64` 与 Intel `x86_64` runner 上分别原生构建 macOS SwiftUI GUI；并在 Xcode 26.6/iOS 26 SDK runner 上运行原生音频核心自检、编译 simulator/device 目标及核验未签名 IPA。
-- **CD**：推送指向 `main` 历史的 SemVer 标签（例如 `v2.14.0`）后，先复用完整 CI，再发布 Windows 单 EXE、macOS arm64/x64 两份独立 DMG、iOS 26 arm64 未签名 IPA、Linux tar.gz、空白 `.env.example`、相关许可证/第三方通知和 `SHA256SUMS.txt`。
+- **CD**：推送指向 `main` 历史的 SemVer 标签（例如 `v2.15.0`）后，先复用完整 CI，再发布 Windows 单 EXE、macOS arm64/x64 两份独立 DMG、iOS 26 arm64 未签名 IPA、Ubuntu/Debian amd64/arm64 GNOME `.deb`、Linux tar.gz、空白 `.env.example`、相关许可证/第三方通知和 `SHA256SUMS.txt`。
 - GitHub Actions 依赖固定到完整提交 SHA，并由 Dependabot 每周检查更新；CI 只拥有仓库读取权限，只有发布作业拥有 `contents: write`。
 
 发布新版本：
@@ -395,11 +407,11 @@ notepad .env
 ```bash
 git switch main
 git pull --ff-only
-git tag v2.14.0
-git push origin v2.14.0
+git tag v2.15.0
+git push origin v2.15.0
 ```
 
-Release 直接提供 Windows 单 EXE、macOS arm64/x64 两份 DMG、iOS 26 arm64 未签名 IPA 和空白 `.env.example`；Linux tar.gz 仍只包含 Linux 脚本与 README。macOS 应用内置的 PowerShell 与 LGPL FFmpeg 均随包附带许可证和来源说明；同页的 .NET 许可证资产不是 Windows 运行依赖。Release 绝不包含真实 `.env`、API Key、BIN、音频、缓存、歌词或本地生成的元数据。
+Release 直接提供 Windows 单 EXE、macOS arm64/x64 两份 DMG、iOS 26 arm64 未签名 IPA、Ubuntu/Debian amd64/arm64 两份 GNOME `.deb` 和空白 `.env.example`；Linux tar.gz 继续提供服务器端脚本与 README。macOS 应用内置的 PowerShell 与 LGPL FFmpeg 均随包附带许可证和来源说明；Linux `.deb` 内置 PowerShell 并使用发行版 FFmpeg；同页的 .NET 许可证资产不是 Windows 运行依赖。Release 绝不包含真实 `.env`、API Key、BIN、音频、缓存、歌词或本地生成的元数据。
 
 ## 本地歌词命名
 

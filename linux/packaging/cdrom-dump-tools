@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+unset PYTHONHOME PYTHONPATH
+export CDROM_DUMP_TOOLS_ROOT=/usr/lib/cdrom-dump-tools
+export PYTHONDONTWRITEBYTECODE=1
+exec /usr/bin/python3 -B -I -m cdrom_dump_tools "$@"

@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=CD-ROM Dump Tools
+Name[zh_CN]=CD 光盘镜像转换
+Comment=Convert BIN/TOC CD audio images with metadata, cover art and lyrics
+Comment[zh_CN]=转换 BIN/TOC 光盘镜像并自动处理标签、封面和歌词
+Exec=cdrom-dump-tools
+TryExec=cdrom-dump-tools
+Icon=io.github.gavinlhx.CdromDumpTools
+Terminal=false
+Categories=AudioVideo;Audio;GTK;GNOME;
+Keywords=CD;BIN;TOC;FLAC;WAV;MusicBrainz;Lyrics;
+StartupNotify=true
+StartupWMClass=io.github.gavinlhx.CdromDumpTools
