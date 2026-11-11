@@ -32,7 +32,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up pinned .NET 8 SDK
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           dotnet-version: 8.0.424
 
@@ -146,7 +146,7 @@ jobs:
           }
 
       - name: Upload tested Windows release asset
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-release
           path: |
@@ -216,7 +216,7 @@ jobs:
           install -m 0644 "$OUTPUT_DIR/$asset" "dist/$asset"
 
       - name: Upload tested unsigned macOS release asset
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: macos-${{ matrix.asset_arch }}-unsigned-release
           path: dist/*-macos-${{ matrix.asset_arch }}-unsigned.dmg
@@ -272,7 +272,7 @@ jobs:
           install -m 0644 "$OUTPUT_DIR/$asset" "dist/$asset"
 
       - name: Upload tested unsigned iOS 26 release asset
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ios26-arm64-unsigned-release
           path: dist/*-ios26-arm64-unsigned.ipa
@@ -344,7 +344,7 @@ jobs:
           install -m 0644 "$expected_asset" "dist/$(basename -- "$expected_asset")"
 
       - name: Upload tested Debian release asset
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: linux-${{ matrix.arch }}-deb-release
           path: dist/*-ubuntu-debian-${{ matrix.arch }}.deb
@@ -387,37 +387,37 @@ jobs:
           fi
 
       - name: Download tested Windows release asset
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: windows-release
           path: dist
 
       - name: Download tested unsigned macOS arm64 release asset
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: macos-arm64-unsigned-release
           path: dist
 
       - name: Download tested unsigned macOS x64 release asset
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: macos-x64-unsigned-release
           path: dist
 
       - name: Download tested unsigned iOS 26 arm64 release asset
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ios26-arm64-unsigned-release
           path: dist
 
       - name: Download tested Ubuntu/Debian amd64 release asset
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: linux-amd64-deb-release
           path: dist
 
       - name: Download tested Ubuntu/Debian arm64 release asset
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: linux-arm64-deb-release
           path: dist
